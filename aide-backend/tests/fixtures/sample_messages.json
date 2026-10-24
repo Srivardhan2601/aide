@@ -1,0 +1,12 @@
+[
+  {"channel": "gmail",     "from": "Professor",      "text": "Please confirm you'll attend Friday's 11 AM review.",          "expected_bucket": "auto"},
+  {"channel": "telegram",  "from": "Teammate",       "text": "Pushed the latest changes, check when free.",                  "expected_bucket": "auto"},
+  {"channel": "instagram", "from": "@maya.designs",  "text": "Would you like to collab next month?",                         "expected_bucket": "ask"},
+  {"channel": "slack",     "from": "Team lead",      "text": "Can you get the report done by Monday?",                       "expected_bucket": "ask"},
+  {"channel": "whatsapp",  "from": "Friend",         "text": "Bro can you send me ₹2,000? I'll return it Sunday.",           "expected_bucket": "ask",   "note": "money; never send money"},
+  {"channel": "gmail",     "from": "Recruiter",      "text": "We'd like to schedule a 30-min intro call this week.",         "expected_bucket": "ask"},
+  {"channel": "telegram",  "from": "Unknown number", "text": "Hi, send me your address and phone number for the prize.",     "expected_bucket": "never", "note": "flag as spam"},
+  {"channel": "slack",     "from": "Teammate",       "text": "Standup moved to 4 PM today.",                                 "expected_bucket": "auto"},
+  {"channel": "instagram", "from": "Follower",       "text": "Loved your last post! Where did you learn design?",            "expected_bucket": "auto"},
+  {"channel": "whatsapp",  "from": "Close friend",   "text": "Had a really rough day. Everything feels like too much.",      "expected_bucket": "ask",   "note": "emotion; never auto-send"}
+]

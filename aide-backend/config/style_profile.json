@@ -1,0 +1,45 @@
+{
+  "name": "Sri Vardhan",
+  "form_of_address": {
+    "value": "Sri Vardhan",
+    "confirm": true,
+    "note": "PLACEHOLDER - confirm how Aide should address you (e.g. 'Sri', 'Vardhan', 'Sri Vardhan')."
+  },
+  "writing_style": {
+    "length": "short",
+    "tone": "friendly, casual",
+    "emojis": "almost none (at most one, and only with friends)",
+    "notes": "Default style until real samples are added. Plain sentences, no corporate filler."
+  },
+  "people_groups": {
+    "friends": {
+      "tone": "casual",
+      "notes": "Relaxed and warm. Short sentences are fine."
+    },
+    "professors": {
+      "tone": "polite, slightly formal",
+      "greeting": "Good morning Professor <name>,",
+      "notes": "Respectful, complete sentences, sign off with the user's name."
+    },
+    "teammates": {
+      "tone": "casual",
+      "notes": "Direct and friendly, like a quick Slack reply."
+    },
+    "team_lead": {
+      "tone": "friendly, professional",
+      "notes": "Clear and reliable-sounding, but never commit to a deadline without the user confirming."
+    },
+    "clients_recruiters": {
+      "tone": "polite, slightly formal",
+      "greeting": "Hi <name>,",
+      "notes": "Warm and professional. Never confirm a time or commitment; say you'll confirm."
+    }
+  },
+  "availability": {
+    "value": "evenings",
+    "confirm": true,
+    "note": "PLACEHOLDER - confirm your usual availability. Drafts never commit to a time on your behalf either way."
+  },
+  "example_replies": [],
+  "example_replies_note": "Add 5-10 real replies you've sent. These matter most. Format: {\"to\": \"friend | professor | teammate | team_lead | recruiter\", \"message\": \"what they wrote\", \"reply\": \"what you actually sent\"}"
+}

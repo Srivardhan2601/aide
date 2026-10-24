@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Aide</title>
+  <meta name="description" content="Your personal assistant for email, chats and calendar." />
+  <meta name="theme-color" content="#0b0b0f" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Aide" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css?v=11" />
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <!-- Shared gradient for icon strokes (active tab, capture button). -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+    <defs>
+      <linearGradient id="aide-grad" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#818cf8" />
+        <stop offset="1" stop-color="#a78bfa" />
+      </linearGradient>
+    </defs>
+  </svg>
+
+  <div class="app" id="app">
+    <aside class="sidebar" id="sidebar" aria-label="Main navigation"></aside>
+    <div class="main">
+      <header class="topbar" id="topbar"></header>
+      <main class="content" id="content" tabindex="-1"></main>
+    </div>
+  </div>
+
+  <!-- Mobile bottom navigation -->
+  <nav class="tabbar" id="tabbar" aria-label="Primary"></nav>
+
+  <!-- Quick capture -->
+  <button class="fab" id="fab" data-action="capture" aria-label="Tell Aide something" title="Tell Aide something">
+    <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+  </button>
+
+  <!-- Bottom sheet (More menu, quick capture) -->
+  <div class="sheet-backdrop" id="sheet" hidden>
+    <div class="sheet" id="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+      <div class="sheet-grip" aria-hidden="true"></div>
+      <div id="sheet-body"></div>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+
+  <div class="palette-backdrop" id="palette" hidden>
+    <div class="palette" role="dialog" aria-modal="true" aria-label="Command palette">
+      <div class="palette-search">
+        <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <input id="palette-input" type="text" placeholder="Type a command or search…" aria-label="Search commands"
+               role="combobox" aria-expanded="true" aria-controls="palette-list" autocomplete="off" />
+        <kbd>Esc</kbd>
+      </div>
+      <ul class="palette-list" id="palette-list" role="listbox"></ul>
+    </div>
+  </div>
+
+  <script src="mock-data.js?v=11"></script>
+  <script src="app.js?v=11"></script>
+</body>
+</html>

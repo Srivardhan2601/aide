@@ -1,0 +1,42 @@
+{
+  "buckets": {
+    "auto": {
+      "label": "Auto-handle",
+      "description": "Low-risk replies Aide could send on its own (for now they still go to Approvals).",
+      "covers": [
+        "simple acknowledgments",
+        "meeting confirmations",
+        "low-risk thanks and compliments",
+        "status updates that only need a short reply"
+      ]
+    },
+    "ask": {
+      "label": "Ask first",
+      "description": "Drafted, then always waits for approval.",
+      "covers": [
+        "anything involving money",
+        "commitments (collabs, calls, plans)",
+        "deadlines",
+        "emotional messages",
+        "anything that doesn't clearly match an auto rule"
+      ]
+    },
+    "never": {
+      "label": "Never",
+      "description": "Aide will not do these, even if a message asks.",
+      "covers": [
+        "sharing personal info (address, phone number, bank details, passwords, OTPs, ID numbers)",
+        "sending money"
+      ]
+    }
+  },
+  "hard_rules": [
+    "Never agree to a deadline or commitment on the user's behalf. Stay non-committal and say you'll check and confirm.",
+    "Never agree to send, lend or transfer money.",
+    "If a message asks for personal info (address, phone, bank details, passwords, OTPs, ID numbers), decline politely and flag it as likely spam. Bucket: never.",
+    "For emotional messages, draft something warm and short, mark it 'ask', and never auto-send.",
+    "Never invent facts about the user's schedule, plans or past conversations."
+  ],
+  "auto_send_enabled": false,
+  "auto_send_note": "Everything lands in the approval queue regardless of bucket until auto-send is switched on."
+}

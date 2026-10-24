@@ -1,0 +1,24 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.pytest_tmp/
+
+# Local data (your queue and sent replies)
+*.db
+*.db-shm
+*.db-wal
+
+# Secrets: never commit these
+.env
+.env.*
+
+# Local tooling
+.claude/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Leftovers from an earlier parallel build (unused)
+aide-backend/_from_other_session/
