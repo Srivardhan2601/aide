@@ -1,6 +1,7 @@
 """SQLite storage: incoming messages, the approval queue, sent replies and daily stats."""
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from datetime import date, datetime, timedelta, timezone
@@ -55,6 +56,21 @@ CREATE TABLE IF NOT EXISTS learned_examples (
     ai_draft    TEXT NOT NULL,
     reply       TEXT NOT NULL,
     created_at  TEXT NOT NULL
+);
+
+-- Food carts planned in Aide. Placed by Claude with the official Swiggy/Zomato connector.
+-- status: planned (editable) -> approved (handed to Claude) -> ordered | cancelled
+CREATE TABLE IF NOT EXISTS food_orders (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    request     TEXT NOT NULL,             -- what you typed
+    app         TEXT NOT NULL CHECK (app IN ('swiggy', 'zomato')),
+    restaurant  TEXT NOT NULL DEFAULT '',
+    items       TEXT NOT NULL,             -- JSON: [{name, qty, notes}]
+    budget      INTEGER,
+    notes       TEXT NOT NULL DEFAULT '',
+    status      TEXT NOT NULL DEFAULT 'planned' CHECK (status IN ('planned', 'approved', 'ordered', 'cancelled')),
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
 );
 
 -- Where a Gmail message came from, so an approved reply goes back into the same thread.
@@ -218,6 +234,45 @@ class DB:
             cur = self.conn.execute("DELETE FROM learned_examples WHERE id = ?", (learned_id,))
             self.conn.commit()
             return cur.rowcount == 1
+
+    # ----- food orders ------------------------------------------------------
+    def add_food_order(self, *, request: str, app: str, restaurant: str, items: list, budget: int | None, notes: str) -> int:
+        now = iso(utcnow())
+        with self.lock:
+            cur = self.conn.execute(
+                """INSERT INTO food_orders (request, app, restaurant, items, budget, notes, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (request, app, restaurant, json.dumps(items, ensure_ascii=False), budget, notes, now, now))
+            self.conn.commit()
+            return cur.lastrowid
+
+    def get_food_order(self, order_id: int) -> dict | None:
+        with self.lock:
+            r = self.conn.execute("SELECT * FROM food_orders WHERE id = ?", (order_id,)).fetchone()
+        return self._food(r) if r else None
+
+    def list_food_orders(self, limit: int = 30) -> list[dict]:
+        with self.lock:
+            rows = self.conn.execute("SELECT * FROM food_orders ORDER BY created_at DESC, id DESC LIMIT ?", (limit,)).fetchall()
+        return [self._food(r) for r in rows]
+
+    def update_food_order(self, order_id: int, *, where_status: tuple[str, ...], **fields) -> bool:
+        if "items" in fields:
+            fields["items"] = json.dumps(fields["items"], ensure_ascii=False)
+        fields["updated_at"] = iso(utcnow())
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        marks = ", ".join("?" for _ in where_status)
+        with self.lock:
+            cur = self.conn.execute(f"UPDATE food_orders SET {cols} WHERE id = ? AND status IN ({marks})",
+                                    (*fields.values(), order_id, *where_status))
+            self.conn.commit()
+            return cur.rowcount == 1
+
+    @staticmethod
+    def _food(r: sqlite3.Row) -> dict:
+        d = dict(r)
+        d["items"] = json.loads(d["items"])
+        return d
 
     # ----- history ----------------------------------------------------------
     def history(self, limit: int = 100) -> list[sqlite3.Row]:

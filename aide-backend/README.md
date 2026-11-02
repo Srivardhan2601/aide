@@ -72,6 +72,12 @@ Tests (no API key needed): `python -m pytest`
 | DELETE | `/api/learned/{id}` | | Forget one |
 | GET/PATCH | `/api/profile` | `{formOfAddress?, availability?}` | Edits `config/style_profile.json` |
 | GET/PUT | `/api/rules` | `{auto[], ask[], never[]}` | Edits what each bucket covers in `config/rules.json` (hard rules stay fixed) |
+| GET/PATCH | `/api/food/profile` | `{area, diet, spice, budgetCap, preferredApp, favorites[], avoid[], notes}` | Food preferences (`config/food_profile.json`) |
+| POST | `/api/food/orders` | `{text, app?}` | Plain-language request → planned cart with checks |
+| GET | `/api/food/orders` | | Carts, newest first, each with `checks` and `canApprove` |
+| PATCH | `/api/food/orders/{id}` | `{items?, restaurant?, budget?, notes?, app?}` | Edit a planned cart |
+| POST | `/api/food/orders/{id}/approve` | | Only if no check is blocking. Returns `handoffPrompt` for Claude |
+| POST | `/api/food/orders/{id}/ordered` / `cancel` | | Track what happened |
 | GET | `/api/health` | | Which drafter is active, and whether Gmail is connected |
 
 ## How drafting works
@@ -96,6 +102,26 @@ Tests (no API key needed): `python -m pytest`
   rewrites from the tone buttons, skipped drafts and "Never" (spam) replies aren't learned. You can
   see and forget them in Settings → "Learned from your edits".
 - Every message lands in Approvals for now, whatever its bucket (`auto_send_enabled: false`).
+
+## Food orders (Swiggy / Zomato)
+
+Swiggy and Zomato have official AI ordering connectors, but they don't allow third-party apps
+on them yet. So Aide **plans and checks** the cart, and **Claude places it** with the official
+connector:
+
+1. In Aide → Food, type what you want ("2 paneer butter masala and 3 butter naan from Punjabi
+   Rasoi under 600, less spicy"). `app/food.py` turns it into an editable cart. The parser is
+   rule-based, so it never invents dishes.
+2. Aide checks the cart against your food preferences: diet (vegetarian/eggetarian/vegan),
+   your never-include list, budget cap, and odd quantities. Red checks block approval.
+3. **Approval 1 (in Aide):** "Approve cart" shows the full cart and asks you to confirm.
+4. Aide copies precise instructions and opens Claude. **Approval 2 (in Claude):** Claude
+   must build exactly that cart, show you the real cart with prices, point out anything
+   missing or substituted, and place it only after you reply "yes, place it".
+
+One-time setup in Claude: Settings → Connectors → add Swiggy (`https://mcp.swiggy.com/food`).
+Zomato needs access requested first ([Zomato's connector page](https://github.com/Zomato/mcp-server-manifest)).
+Through these connectors, Swiggy is cash on delivery and orders can't be cancelled; Zomato is paid by QR code.
 
 ## Still needed from you
 

@@ -3,6 +3,9 @@
 A personal assistant that drafts replies to your messages in your own voice and waits for your OK before sending anything.
 
 - **`aide-ui/`**: the app (Home, Approvals, Chat, Activity, Apps…). Plain HTML/CSS/JS, installable on your phone. See [aide-ui/README.md](aide-ui/README.md).
+- **Food:** plan a Swiggy or Zomato cart in Aide, check it against your diet, budget and
+  never-include list, approve it, and Claude places it with the official connector after showing
+  you the real cart and getting your "yes, place it".
 - **`aide-backend/`**: FastAPI + SQLite server. It drafts replies with Claude using your style profile and rules, keeps the approval queue, and sends after a 5-second undo window (sending is mocked for now). See [aide-backend/README.md](aide-backend/README.md).
 
 ## Quick start

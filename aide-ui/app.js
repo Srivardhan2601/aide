@@ -123,6 +123,12 @@
     flame: '<path d="M12 22c4 0 7-2.9 7-7 0-3.5-2.4-5.6-3.6-8.6-.5 1.9-1.6 3-3.1 3.4C12.7 6.9 11.3 4.4 9 3c.3 4.1-5 6.5-5 12 0 4.1 3.6 7 8 7z"/>',
     mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>',
     external: '<path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
+    food: '<path d="M3 11h18a9 9 0 0 1-18 0z"/><path d="M8 7c0-1.2.8-1.8.8-3M12 7c0-1.2.8-1.8.8-3M16 7c0-1.2.8-1.8.8-3"/>',
+    minus: '<path d="M5 12h14"/>',
+    copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>',
+    info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
+    alert: '<path d="M12 3l9.5 17h-19z"/><path d="M12 10v4M12 17h.01"/>',
+    ban: '<circle cx="12" cy="12" r="9"/><path d="M6 6l12 12"/>',
   };
   const checkDraw = () => '<svg class="check-draw" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M7.5 12.5l3 3 6-6.5"/></svg>';
   const icon = (name) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
@@ -134,6 +140,7 @@
     { id: 'apps', label: 'Apps', icon: 'apps' },
     { id: 'approvals', label: 'Approvals', icon: 'approvals' },
     { id: 'activity', label: 'Activity', icon: 'activity' },
+    { id: 'food', label: 'Food', icon: 'food' },
     { id: 'tasks', label: 'Tasks', icon: 'tasks' },
     { id: 'rules', label: 'Rules', icon: 'rules' },
     { id: 'settings', label: 'Settings', icon: 'settings' },
@@ -141,7 +148,7 @@
 
   // Mobile bottom bar: 5 items, Chat in the middle. Everything else lives under More.
   const TABS = ['home', 'approvals', 'chat', 'activity', 'more'];
-  const MORE_VIEWS = ['apps', 'tasks', 'rules', 'settings'];
+  const MORE_VIEWS = ['food', 'apps', 'tasks', 'rules', 'settings'];
 
   const urlView = new URLSearchParams(location.search).get('view');
   const state = {
@@ -176,6 +183,8 @@
     hardRules: [], // safety rules enforced in code (read-only in the UI)
     liveRules: false, // state.rules came from the backend, so edits are saved there
     liveActivity: false,
+    // Food: carts planned and checked in Aide, then placed by Claude with the official connector.
+    food: { orders: null, profile: null, app: null, busy: false, showPrefs: false },
   };
 
   // Replies still waiting on you (cards that are mid-send don't count).
@@ -1036,6 +1045,211 @@
   }
 
   // ===== View: Settings =====================================================
+  // ===== View: Food =========================================================
+  // Plan and check the cart here; Claude places it with the official Swiggy/Zomato connector
+  // (they don't allow third-party apps yet), after showing you the real cart and getting your yes.
+  const CHECK_ICON = { ok: 'check', info: 'info', warn: 'alert', block: 'ban' };
+  const APP_NAME = { swiggy: 'Swiggy', zomato: 'Zomato' };
+  const orderById = (id) => (state.food.orders || []).find((o) => String(o.id) === String(id));
+
+  async function loadFood() {
+    try {
+      const [orders, profile] = await Promise.all([api('/api/food/orders'), api('/api/food/profile')]);
+      state.food.orders = orders;
+      state.food.profile = profile;
+      if (!state.food.app) state.food.app = profile.preferredApp;
+      if (state.view === 'food' && !document.activeElement.matches('input, textarea, select')) renderView();
+    } catch (e) { /* the view shows the offline state */ }
+  }
+
+  function replaceOrder(o) {
+    const list = state.food.orders || (state.food.orders = []);
+    const i = list.findIndex((x) => x.id === o.id);
+    if (i >= 0) list[i] = o; else list.unshift(o);
+  }
+
+  // Re-render without losing your place: put focus back on the same cart field.
+  function renderFoodKeepingFocus() {
+    const a = document.activeElement;
+    const key = a && a.dataset && a.dataset.food ? `[data-food="${a.dataset.food}"][data-order="${a.dataset.order}"]${a.dataset.idx ? `[data-idx="${a.dataset.idx}"]` : ''}` : null;
+    renderView();
+    const el = key && document.querySelector(key);
+    if (el) el.focus();
+  }
+
+  async function foodCall(path, opts, okMsg) {
+    try {
+      const o = await api(path, opts);
+      replaceOrder(o);
+      renderFoodKeepingFocus();
+      if (okMsg) toast(okMsg);
+      return o;
+    } catch (e) {
+      toast(`Couldn't update the cart: ${e.message}`);
+      loadFood();
+      return null;
+    }
+  }
+
+  const patchOrder = (id, body) => foodCall(`/api/food/orders/${id}`, { method: 'PATCH', body });
+
+  async function copyText(text) {
+    try { await navigator.clipboard.writeText(text); return true; } catch (e) { return false; }
+  }
+
+  function foodItem(o, it, i, edit) {
+    const ids = `data-order="${o.id}" data-idx="${i}"`;
+    if (!edit) {
+      return `<li class="food-item"><span class="qty-fixed">${it.qty}×</span><div class="food-item-main"><div class="food-name-ro">${esc(it.name)}</div>${it.notes ? `<div class="food-note-ro">${esc(it.notes)}</div>` : ''}</div></li>`;
+    }
+    return `
+      <li class="food-item">
+        <div class="qty" role="group" aria-label="Quantity of ${esc(it.name)}">
+          <button type="button" class="icon-btn sm" data-action="food-qty" ${ids} data-d="-1" aria-label="One less" ${it.qty <= 1 ? 'disabled' : ''}>${icon('minus')}</button>
+          <span>${it.qty}</span>
+          <button type="button" class="icon-btn sm" data-action="food-qty" ${ids} data-d="1" aria-label="One more">${icon('plus')}</button>
+        </div>
+        <div class="food-item-main">
+          <input class="input food-name" data-food="name" ${ids} value="${esc(it.name)}" maxlength="120" aria-label="Dish" />
+          <input class="input food-note" data-food="item-notes" ${ids} value="${esc(it.notes)}" maxlength="200" placeholder="Notes, e.g. less oil" aria-label="Notes for ${esc(it.name)}" />
+        </div>
+        <button type="button" class="icon-btn sm" data-action="food-remove" ${ids} aria-label="Remove ${esc(it.name)}">${icon('trash')}</button>
+      </li>`;
+  }
+
+  function foodCard(o) {
+    const edit = o.status === 'planned';
+    const p = state.food.profile;
+    const count = o.items.reduce((n, i) => n + i.qty, 0);
+    const blocked = o.checks.some((c) => c.level === 'block');
+    const id = `data-order="${o.id}"`;
+    const setup = o.app === 'swiggy'
+      ? 'add <b>Swiggy</b> with the URL <code>https://mcp.swiggy.com/food</code>'
+      : 'add <b>Zomato</b> (request access first on <a href="https://github.com/Zomato/mcp-server-manifest" target="_blank" rel="noopener">Zomato\'s connector page</a>)';
+    return `
+      <article class="card food-cart is-${o.status}" data-cart="${o.id}" aria-label="${esc(o.appLabel)} cart">
+        <header class="food-cart-head">
+          <span class="food-app ${o.app}">${esc(o.appLabel)}</span>
+          ${edit
+            ? `<input class="input food-rest" data-food="restaurant" ${id} value="${esc(o.restaurant)}" maxlength="120" placeholder="Any restaurant (Claude suggests options)" aria-label="Restaurant" />`
+            : `<h3 class="food-rest-name">${esc(o.restaurant || 'Claude will suggest restaurants')}</h3>`}
+          <span class="pill ${o.status === 'approved' ? 's-sent' : 's-scheduled'}">${o.status === 'approved' ? 'Approved' : 'Planning'}</span>
+        </header>
+        <p class="food-request">You asked: “${esc(o.request)}”</p>
+        <ul class="food-items">${o.items.map((it, i) => foodItem(o, it, i, edit)).join('')}</ul>
+        ${edit ? `
+          <form class="food-add" data-form="food-add" ${id}>
+            <input class="input" name="dish" maxlength="120" placeholder="Add a dish, e.g. 2 butter naan" aria-label="Add a dish" autocomplete="off" />
+            <button class="btn btn-ghost btn-sm" type="submit">${icon('plus')}Add</button>
+          </form>` : ''}
+        <div class="food-meta">
+          <label class="food-meta-field"><span class="field-label">Budget (₹)</span>
+            ${edit ? `<input class="input" type="number" min="0" max="100000" inputmode="numeric" data-food="budget" ${id} value="${o.budget ?? ''}" placeholder="${p.budgetCap} (your cap)" />` : `<b>₹${o.budget ?? p.budgetCap}</b>`}</label>
+          <label class="food-meta-field grow"><span class="field-label">Notes for the order</span>
+            ${edit ? `<input class="input" data-food="notes" ${id} value="${esc(o.notes)}" maxlength="300" placeholder="e.g. less spicy, no cutlery" />` : `<b>${esc(o.notes || 'None')}</b>`}</label>
+          <span class="food-count">${count} item${count === 1 ? '' : 's'}</span>
+        </div>
+        <ul class="food-checks" aria-label="Checks">
+          ${o.checks.map((c) => `<li class="chk ${c.level}">${icon(CHECK_ICON[c.level])}<span>${esc(c.text)}</span></li>`).join('')}
+        </ul>
+        <footer class="food-actions">
+          ${edit ? `
+            <button class="btn btn-ghost" data-action="food-cancel" ${id}>Cancel</button>
+            <button class="btn btn-primary" data-action="food-approve" ${id} ${o.canApprove ? '' : 'disabled'} title="${blocked ? 'Fix the red checks first' : ''}">${icon('check')}Approve cart</button>`
+          : `
+            <div class="food-handoff">
+              <p><b>Next: place it in Claude.</b> Claude builds this exact cart with the ${esc(o.appLabel)} connector, shows you the real cart with prices and anything that differs, and only orders after you reply <b>“yes, place it”</b>.</p>
+              <div class="actions">
+                <button class="btn btn-primary" data-action="food-claude" ${id}>${icon('external')}Copy &amp; open Claude</button>
+                <button class="btn btn-secondary" data-action="food-copy" ${id}>${icon('copy')}Copy instructions</button>
+                <button class="btn btn-ghost" data-action="food-ordered" ${id}>${icon('check')}Mark as ordered</button>
+                <button class="btn btn-ghost" data-action="food-cancel" ${id}>Cancel</button>
+              </div>
+              <details class="food-prompt"><summary>See exactly what Claude will be told</summary>
+                <textarea class="input" readonly rows="12" id="prompt-${o.id}" aria-label="Instructions for Claude">${esc(o.handoffPrompt)}</textarea></details>
+              <p class="food-setup">${icon('info')}<span>First time? In Claude, open <b>Settings → Connectors</b> and ${setup}. Sign in with your ${esc(o.appLabel)} account there.</span></p>
+            </div>`}
+        </footer>
+      </article>`;
+  }
+
+  function foodPrefs(p) {
+    const sel = (name, options, cur, label) => `
+      <label class="field"><span class="field-label">${label}</span>
+        <select class="select" name="${name}">${options.map(([v, l]) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`;
+    return `
+      <details class="card food-prefs" ${p.area ? '' : 'open'}>
+        <summary><span>${icon('settings')}Food preferences</span><span class="muted">${esc([p.area || 'Area not set', p.diet !== 'no preference' ? p.diet : '', `cap ₹${p.budgetCap}`].filter(Boolean).join(' · '))}</span></summary>
+        <form class="food-prefs-form" data-form="food-prefs">
+          <label class="field wide"><span class="field-label">Delivery area (just the locality, never your full address)</span>
+            <input class="input" name="area" maxlength="120" value="${esc(p.area)}" placeholder="e.g. Indiranagar, Bengaluru" autocomplete="off" /></label>
+          ${sel('diet', [['no preference', 'No preference'], ['vegetarian', 'Vegetarian'], ['eggetarian', 'Eggetarian'], ['vegan', 'Vegan']], p.diet, 'Diet')}
+          ${sel('spice', [['mild', 'Mild'], ['medium', 'Medium'], ['spicy', 'Spicy']], p.spice, 'Spice level')}
+          <label class="field"><span class="field-label">Budget cap per order (₹)</span>
+            <input class="input" name="budgetCap" type="number" min="0" max="100000" inputmode="numeric" value="${p.budgetCap}" /></label>
+          ${sel('preferredApp', [['swiggy', 'Swiggy'], ['zomato', 'Zomato']], p.preferredApp, 'Usual app')}
+          <label class="field wide"><span class="field-label">Favourite orders (comma-separated, shown as quick picks)</span>
+            <input class="input" name="favorites" maxlength="1000" value="${esc(p.favorites.join(', '))}" placeholder="e.g. 1 masala dosa from MTR, 2 veg momos" autocomplete="off" /></label>
+          <label class="field wide"><span class="field-label">Never include (allergies or dislikes, comma-separated)</span>
+            <input class="input" name="avoid" maxlength="500" value="${esc(p.avoid.join(', '))}" placeholder="e.g. mushroom, peanuts" autocomplete="off" /></label>
+          <label class="field wide"><span class="field-label">Anything else Claude should know</span>
+            <input class="input" name="notes" maxlength="300" value="${esc(p.notes)}" placeholder="e.g. no cutlery, prefer places rated 4+" autocomplete="off" /></label>
+          <div class="about-actions wide"><button class="btn btn-primary btn-sm" type="submit">Save preferences</button></div>
+        </form>
+      </details>`;
+  }
+
+  function viewFood() {
+    const f = state.food;
+    if (!state.live) {
+      return `<div class="page">${emptyState('food', 'Food ordering needs the Aide server', 'Start Aide with start.cmd, then open Food again.')}</div>`;
+    }
+    if (!f.orders || !f.profile) return `<div class="page"><p class="page-sub">Loading your carts…</p></div>`;
+    const open = f.orders.filter((o) => o.status === 'planned' || o.status === 'approved');
+    const past = f.orders.filter((o) => o.status === 'ordered' || o.status === 'cancelled').slice(0, 8);
+    const app = f.app || f.profile.preferredApp;
+    return `
+      <div class="page food-page">
+        <ol class="food-steps" aria-label="How it works">
+          <li><span>1</span><div><b>Plan</b> the cart here</div></li>
+          <li><span>2</span><div><b>Check</b> it against your preferences</div></li>
+          <li><span>3</span><div><b>Approve</b>, then Claude shows the real ${APP_NAME[app]} cart and orders only after your yes</div></li>
+        </ol>
+
+        <form class="card food-plan" data-form="food-plan">
+          <label class="field-label" for="food-text">What do you want to eat?</label>
+          <textarea id="food-text" class="input food-input" rows="2" maxlength="1000" placeholder="e.g. 2 paneer butter masala and 3 butter naan from Punjabi Rasoi under 600, less spicy"></textarea>
+          ${f.profile.favorites.length ? `<div class="chips food-favs" aria-label="Favourites">${f.profile.favorites.map((x) => `<button type="button" class="chip" data-action="food-fav" data-text="${esc(x)}">${icon('plus')}${esc(x)}</button>`).join('')}</div>` : ''}
+          <div class="food-plan-row">
+            <div class="segmented" role="radiogroup" aria-label="Order from">
+              ${['swiggy', 'zomato'].map((a) => `<button type="button" role="radio" aria-checked="${app === a}" data-action="food-app" data-app="${a}"><i class="app-dot ${a}" aria-hidden="true"></i>${APP_NAME[a]}</button>`).join('')}
+            </div>
+            <button class="btn btn-primary" type="submit" ${f.busy ? 'disabled' : ''}>${icon('food')}${f.busy ? 'Planning…' : 'Plan cart'}</button>
+          </div>
+        </form>
+
+        <div class="stack" data-stagger>${open.map(foodCard).join('')}</div>
+
+        ${foodPrefs(f.profile)}
+
+        ${past.length ? `
+          <section class="section" aria-labelledby="food-recent">
+            <div class="section-head"><h2 id="food-recent">Recent</h2></div>
+            <div class="list">
+              ${past.map((o) => `
+                <div class="row">
+                  <i class="app-dot ${o.app}" aria-hidden="true"></i>
+                  <div class="row-main">
+                    <div class="row-title">${esc(o.items.map((i) => `${i.qty}× ${i.name}`).join(', '))}</div>
+                    <div class="row-sub">${esc(o.restaurant || 'Any restaurant')} · ${esc(o.appLabel)} · ${esc(fmtWhen(o.updatedAt))}</div>
+                  </div>
+                  <span class="pill ${o.status === 'ordered' ? 's-sent' : 's-skipped'}">${o.status === 'ordered' ? 'Ordered' : 'Cancelled'}</span>
+                </div>`).join('')}
+            </div>
+          </section>` : ''}
+      </div>`;
+  }
+
   // "About you" + "Learned from your edits": live only (they read and write the backend).
   function settingsLiveSections() {
     const p = state.profile;
@@ -1133,7 +1347,7 @@
   }
 
   // ===== Render =============================================================
-  const VIEW_FNS = { home: viewHome, chat: viewChat, apps: viewApps, app: viewApp, approvals: viewApprovals, activity: viewActivity, tasks: viewTasks, rules: viewRules, settings: viewSettings };
+  const VIEW_FNS = { home: viewHome, chat: viewChat, apps: viewApps, app: viewApp, approvals: viewApprovals, activity: viewActivity, food: viewFood, tasks: viewTasks, rules: viewRules, settings: viewSettings };
 
   // ===== Motion =============================================================
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -1223,6 +1437,7 @@
     renderAll();
     $('#content').scrollTop = 0;
     if (state.live && ['activity', 'rules', 'settings'].includes(view)) loadExtras();
+    if (state.live && view === 'food') loadFood();
   }
 
   // ===== Sheets (More menu, quick capture) ==================================
@@ -1253,8 +1468,9 @@
   }
 
   function openMore() {
-    const L = { apps: 'Apps', tasks: 'Tasks', rules: 'Rules', settings: 'Settings' };
+    const L = { food: 'Food', apps: 'Apps', tasks: 'Tasks', rules: 'Rules', settings: 'Settings' };
     const sub = {
+      food: (() => { const n = (state.food.orders || []).filter((o) => o.status === 'planned' || o.status === 'approved').length; return n ? `${n} cart${n > 1 ? 's' : ''} open` : 'Plan an order'; })(),
       apps: `${appList().filter((a) => a.connected).length} connected`,
       tasks: `${state.tasks.filter((t) => t.status !== 'done').length} active`,
       rules: `${Object.values(state.rules).reduce((n, l) => n + l.length, 0)} rules`,
@@ -1401,6 +1617,7 @@
       { label: `Switch to ${isDark() ? 'light' : 'dark'} mode`, icon: isDark() ? 'sun' : 'moon', run: toggleTheme },
       { label: `Tell ${M.agent.name} something`, icon: 'mic', run: openCapture },
       { label: 'Paste a message', icon: 'inbox', run: openPaste },
+      { label: 'Order food', icon: 'food', run: () => { go('food'); const f = $('#food-text'); if (f) f.focus(); } },
       { label: 'Add a task', icon: 'plus', run: () => { go('tasks'); $('#task-title').focus(); } },
       { label: 'Add a rule', icon: 'rules', run: () => { go('rules'); $('#add-auto').focus(); } },
       ...M.quickActions.map((q) => ({ label: q, icon: 'chat', hint: 'Ask', run: () => { go('chat'); sendChat(q); } })),
@@ -1538,6 +1755,67 @@
       toast('Task removed', { action: 'Undo', onAction: () => { state.tasks.splice(idx, 0, removed); renderView(); } });
     },
 
+    // ----- food ---------------------------------------------------------------
+    'food-app': (el) => {
+      state.food.app = el.dataset.app;
+      document.querySelectorAll('[data-action="food-app"]').forEach((b) => b.setAttribute('aria-checked', b === el));
+    },
+    'food-fav': (el) => {
+      const t = $('#food-text');
+      t.value = t.value.trim() ? `${t.value.trim()}, ${el.dataset.text}` : el.dataset.text;
+      t.focus();
+    },
+    'food-qty': (el) => {
+      const o = orderById(el.dataset.order);
+      const items = o.items.map((it, i) => (i === +el.dataset.idx ? { ...it, qty: Math.max(1, Math.min(50, it.qty + +el.dataset.d)) } : it));
+      patchOrder(o.id, { items });
+    },
+    'food-remove': (el) => {
+      const o = orderById(el.dataset.order);
+      const removed = o.items[+el.dataset.idx];
+      patchOrder(o.id, { items: o.items.filter((_, i) => i !== +el.dataset.idx) }).then((saved) => {
+        if (saved) toast(`Removed ${removed.name}`, { action: 'Undo', onAction: () => { const cur = orderById(o.id); const items = [...cur.items]; items.splice(+el.dataset.idx, 0, removed); patchOrder(o.id, { items }); } });
+      });
+    },
+    // Step 1 of 2: you approve the cart here (Claude then needs your "yes, place it" before ordering).
+    'food-approve': (el) => {
+      const o = orderById(el.dataset.order);
+      if (!o || !o.canApprove) return;
+      const p = state.food.profile;
+      const cautions = o.checks.filter((c) => c.level === 'warn' || (c.level === 'info' && /cancel|QR/.test(c.text)));
+      openSheet(`
+        <h2 class="sheet-title" id="sheet-title">Approve this cart?</h2>
+        <p class="sheet-sub">${esc(o.appLabel)} · ${esc(o.restaurant || 'restaurant to pick in Claude')} · budget ₹${o.budget ?? p.budgetCap}</p>
+        <ul class="confirm-items">${o.items.map((it) => `<li><b>${it.qty}×</b> ${esc(it.name)}${it.notes ? ` <span class="muted">(${esc(it.notes)})</span>` : ''}</li>`).join('')}</ul>
+        ${o.notes ? `<p class="sheet-sub">Notes: ${esc(o.notes)}</p>` : ''}
+        ${cautions.length ? `<ul class="food-checks">${cautions.map((c) => `<li class="chk ${c.level}">${icon(CHECK_ICON[c.level])}<span>${esc(c.text)}</span></li>`).join('')}</ul>` : ''}
+        <p class="confirm-note">${icon('info')}<span>Nothing is ordered yet. Next, Claude shows you the real ${esc(o.appLabel)} cart with prices and only places it after you reply “yes, place it”.</span></p>
+        <div class="capture-actions">
+          <button type="button" class="btn btn-ghost" data-action="sheet-close">Keep editing</button>
+          <button type="button" class="btn btn-primary" data-action="food-approve-confirm" data-order="${o.id}">${icon('check')}Yes, approve this cart</button>
+        </div>`);
+    },
+    'food-approve-confirm': (el) => {
+      closeSheet();
+      foodCall(`/api/food/orders/${el.dataset.order}/approve`, { method: 'POST' }, 'Cart approved. Now place it in Claude.');
+    },
+    'sheet-close': () => closeSheet(),
+    'food-cancel': (el) => foodCall(`/api/food/orders/${el.dataset.order}/cancel`, { method: 'POST' }, 'Cart cancelled'),
+    'food-ordered': (el) => foodCall(`/api/food/orders/${el.dataset.order}/ordered`, { method: 'POST' }, 'Marked as ordered. Enjoy your meal!'),
+    'food-copy': async (el) => {
+      const o = orderById(el.dataset.order);
+      if (await copyText(o.handoffPrompt)) toast('Instructions copied. Paste them into Claude.');
+      else { const d = el.closest('.food-handoff').querySelector('details'); d.open = true; const t = $(`#prompt-${o.id}`); t.focus(); t.select(); toast('Copy blocked by the browser: press Ctrl+C to copy the selected text.'); }
+    },
+    'food-claude': async (el) => {
+      const o = orderById(el.dataset.order);
+      // Open first (inside the click, so it isn't blocked), then copy. The ?q= prefill is
+      // undocumented, so the clipboard is the reliable path.
+      window.open(`https://claude.ai/new?q=${encodeURIComponent(o.handoffPrompt)}`, '_blank', 'noopener');
+      const ok = await copyText(o.handoffPrompt);
+      toast(ok ? 'Claude opened and instructions copied. If the box is empty, paste with Ctrl+V.' : 'Claude opened. Use "Copy instructions" and paste them there.');
+    },
+
     'forget-learned': (el) => {
       api(`/api/learned/${el.dataset.id}`, { method: 'DELETE' })
         .then(() => { state.learned = (state.learned || []).filter((l) => String(l.id) !== el.dataset.id); renderView(); toast('Forgotten. It won’t be used for new drafts.'); })
@@ -1617,6 +1895,43 @@
       toast('Task added');
     }
 
+    if (kind === 'food-plan') {
+      const input = $('#food-text');
+      const text = input.value.trim();
+      if (!text) { input.focus(); return; }
+      state.food.busy = true;
+      renderView();
+      api('/api/food/orders', { method: 'POST', body: { text, app: state.food.app || state.food.profile.preferredApp } })
+        .then((o) => {
+          replaceOrder(o);
+          toast(o.canApprove ? 'Cart planned. Check it, then approve.' : 'Cart planned, but something needs fixing (see the red check).');
+        })
+        .catch((err) => toast(`Couldn't plan that: ${err.message}`))
+        .finally(() => { state.food.busy = false; renderView(); });
+    }
+
+    if (kind === 'food-add') {
+      const o = orderById(form.dataset.order);
+      const raw = form.elements.dish.value.trim();
+      if (!o || !raw) return;
+      const m = raw.match(/^(\d{1,2})\s*(?:x|×)?\s+(.+)$/i);
+      const item = m ? { name: m[2], qty: Math.min(50, +m[1] || 1), notes: '' } : { name: raw, qty: 1, notes: '' };
+      patchOrder(o.id, { items: [...o.items, item] });
+    }
+
+    if (kind === 'food-prefs') {
+      const el = form.elements;
+      const list = (s) => s.split(',').map((x) => x.trim()).filter(Boolean);
+      const body = {
+        area: el.area.value.trim(), diet: el.diet.value, spice: el.spice.value,
+        budgetCap: Math.max(0, parseInt(el.budgetCap.value, 10) || 0), preferredApp: el.preferredApp.value,
+        favorites: list(el.favorites.value), avoid: list(el.avoid.value), notes: el.notes.value.trim(),
+      };
+      api('/api/food/profile', { method: 'PATCH', body })
+        .then((p) => { state.food.profile = p; state.food.app = p.preferredApp; toast('Food preferences saved'); loadFood(); })
+        .catch((err) => toast(`Couldn't save: ${err.message}`));
+    }
+
     if (kind === 'profile') {
       const body = { formOfAddress: $('#pf-address').value.trim(), availability: $('#pf-availability').value.trim() };
       if (!body.formOfAddress || !body.availability) { toast('Please fill in both fields'); return; }
@@ -1651,6 +1966,25 @@
     if (t.dataset.filter) { state.activityFilter[t.dataset.filter] = t.value; renderView(); $('#' + t.id).focus(); }
     if (t.dataset.input === 'draft') saveDraft(t.dataset.id); // fires on blur after an edit
     if (t.dataset.input === 'limit') { /* TODO(api): PATCH /api/settings { dailyLimit } */ toast(`Daily limit set to ${t.value}`); }
+  });
+
+  // Food cart fields save when you leave them (change fires on blur / Enter).
+  document.addEventListener('change', (e) => {
+    const t = e.target;
+    if (!t.dataset || !t.dataset.food) return;
+    const o = orderById(t.dataset.order);
+    if (!o || o.status !== 'planned') return;
+    const v = t.value.trim();
+    const kind = t.dataset.food;
+    if (kind === 'name' || kind === 'item-notes') {
+      if (kind === 'name' && !v) { t.value = o.items[+t.dataset.idx].name; return; }
+      const key = kind === 'name' ? 'name' : 'notes';
+      patchOrder(o.id, { items: o.items.map((it, i) => (i === +t.dataset.idx ? { ...it, [key]: v } : it)) });
+    } else if (kind === 'budget') {
+      patchOrder(o.id, { budget: v === '' ? null : Math.max(0, parseInt(v, 10) || 0) });
+    } else {
+      patchOrder(o.id, { [kind]: v });
+    }
   });
 
   document.addEventListener('focusout', (e) => {
@@ -1792,7 +2126,7 @@
       state.approvals = next;
       state.stats = stats;
       state.live = true;
-      if (!wasLive) loadExtras();
+      if (!wasLive) { loadExtras(); loadFood(); }
       const wasOffline = state.offline;
       state.offline = false;
       if (render && (changed || statsChanged || wasOffline) && !focused) renderAll();

@@ -1,0 +1,11 @@
+{
+  "area": "",
+  "diet": "no preference",
+  "spice": "medium",
+  "budget_cap": 500,
+  "preferred_app": "swiggy",
+  "favorites": [],
+  "avoid": [],
+  "notes": "",
+  "_help": "Edit these in Aide (Food > Preferences). diet: 'no preference', 'vegetarian', 'eggetarian' or 'vegan'. area is just your locality (e.g. 'Indiranagar, Bengaluru'), never your full address: you pick the exact address inside Swiggy or Zomato."
+}

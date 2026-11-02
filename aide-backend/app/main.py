@@ -17,8 +17,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from .classifier import guess_group
-from .config import BUCKET_LABELS, CHANNELS, MINUTES_PER_REPLY, Settings, load_profile, load_rules, save_json
+from .config import BUCKET_LABELS, CHANNELS, MINUTES_PER_REPLY, Settings, load_json, load_profile, load_rules, save_json
 from .db import DB, iso, local_day, parse_iso, streak, utcnow
+from . import food
 from . import gmail as gmail_mod
 from .drafter import get_drafter
 from .sender import send_reply
@@ -59,6 +60,57 @@ class RulesIn(BaseModel):
     auto: list[str] = Field(default_factory=list, max_length=30)
     ask: list[str] = Field(default_factory=list, max_length=30)
     never: list[str] = Field(default_factory=list, max_length=30)
+
+
+FoodApp = Literal["swiggy", "zomato"]
+
+
+class FoodItem(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    qty: int = Field(default=1, ge=1, le=50)
+    notes: str = Field(default="", max_length=200)
+
+
+class FoodRequestIn(BaseModel):
+    text: str = Field(min_length=1, max_length=1000)
+    app: FoodApp | None = None
+
+
+class FoodPatchIn(BaseModel):
+    app: FoodApp | None = None
+    restaurant: str | None = Field(default=None, max_length=120)
+    budget: int | None = Field(default=None, ge=0, le=100_000)
+    notes: str | None = Field(default=None, max_length=300)
+    items: list[FoodItem] | None = Field(default=None, max_length=30)
+
+
+class FoodProfileIn(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    area: str | None = Field(default=None, max_length=120)
+    diet: Literal["no preference", "vegetarian", "eggetarian", "vegan"] | None = None
+    spice: Literal["mild", "medium", "spicy"] | None = None
+    budget_cap: int | None = Field(default=None, alias="budgetCap", ge=0, le=100_000)
+    preferred_app: FoodApp | None = Field(default=None, alias="preferredApp")
+    favorites: list[str] | None = Field(default=None, max_length=30)
+    avoid: list[str] | None = Field(default=None, max_length=30)
+    notes: str | None = Field(default=None, max_length=300)
+
+
+FOOD_DEFAULTS = {"area": "", "diet": "no preference", "spice": "medium", "budget_cap": 500,
+                 "preferred_app": "swiggy", "favorites": [], "avoid": [], "notes": ""}
+
+
+def load_food_profile() -> dict:
+    try:
+        saved = load_json("food_profile.json")
+    except FileNotFoundError:
+        saved = {}
+    return {**FOOD_DEFAULTS, **{k: v for k, v in saved.items() if not k.startswith("_")}}
+
+
+def food_profile_json(p: dict) -> dict:
+    return {"area": p["area"], "diet": p["diet"], "spice": p["spice"], "budgetCap": p["budget_cap"],
+            "preferredApp": p["preferred_app"], "favorites": p["favorites"], "avoid": p["avoid"], "notes": p["notes"]}
 
 
 def _norm(s: str | None) -> str:
@@ -369,6 +421,98 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
     @app.get("/api/rules")
     def get_rules():
         return rules_json(load_rules())
+
+    # ----- food (planned in Aide, placed by Claude with the official connector) ----
+    def food_json(o: dict, prefs: dict | None = None) -> dict:
+        prefs = prefs or load_food_profile()
+        return {
+            "id": o["id"], "request": o["request"], "app": o["app"], "appLabel": food.APP_LABEL[o["app"]],
+            "restaurant": o["restaurant"], "items": o["items"], "budget": o["budget"], "notes": o["notes"],
+            "status": o["status"], "createdAt": o["created_at"], "updatedAt": o["updated_at"],
+            "checks": food.checks(o, prefs),
+            "canApprove": o["status"] == "planned" and food.can_approve(o, prefs),
+            "handoffPrompt": food.handoff_prompt(o, prefs) if o["status"] in ("approved", "ordered") else None,
+        }
+
+    def food_or_404(order_id: int) -> dict:
+        o = db.get_food_order(order_id)
+        if not o:
+            raise HTTPException(404, "Order not found")
+        return o
+
+    @app.get("/api/food/profile")
+    def get_food_profile():
+        return food_profile_json(load_food_profile())
+
+    @app.patch("/api/food/profile")
+    def patch_food_profile(body: FoodProfileIn):
+        p = load_food_profile()
+        for key in body.model_fields_set:
+            value = getattr(body, key)
+            if isinstance(value, str):
+                value = " ".join(value.split())
+            elif isinstance(value, list):
+                value = _clean_rules(value)[:30]
+            p[key] = value
+        save_json("food_profile.json", p)
+        return food_profile_json(p)
+
+    @app.post("/api/food/orders", status_code=201)
+    def plan_food_order(body: FoodRequestIn):
+        prefs = load_food_profile()
+        plan = food.parse_request(body.text, prefs)
+        if body.app:
+            plan["app"] = body.app
+        oid = db.add_food_order(request=body.text.strip(), **plan)
+        return food_json(db.get_food_order(oid), prefs)
+
+    @app.get("/api/food/orders")
+    def list_food_orders():
+        prefs = load_food_profile()
+        return [food_json(o, prefs) for o in db.list_food_orders()]
+
+    @app.patch("/api/food/orders/{order_id}")
+    def edit_food_order(order_id: int, body: FoodPatchIn):
+        o = food_or_404(order_id)
+        fields = {k: getattr(body, k) for k in body.model_fields_set}
+        if "items" in fields:
+            fields["items"] = [i.model_dump() for i in body.items or []]
+        if fields.get("app") is None:
+            fields.pop("app", None)
+        for k in ("restaurant", "notes"):
+            if k in fields:
+                fields[k] = " ".join((fields[k] or "").split())
+        if fields and not db.update_food_order(order_id, where_status=("planned",), **fields):
+            raise HTTPException(409, f"Can't edit: this order is {o['status']}")
+        return food_json(db.get_food_order(order_id))
+
+    @app.post("/api/food/orders/{order_id}/approve")
+    def approve_food_order(order_id: int):
+        """You approve the planned cart. Returns the instructions to give Claude.
+        Nothing is ordered here: Claude shows the real cart and waits for your 'yes, place it'."""
+        o = food_or_404(order_id)
+        prefs = load_food_profile()
+        if o["status"] != "planned":
+            raise HTTPException(409, f"Can't approve: this order is {o['status']}")
+        if not food.can_approve(o, prefs):
+            raise HTTPException(409, "Fix the blocked checks before approving")
+        db.update_food_order(order_id, where_status=("planned",), status="approved")
+        return food_json(db.get_food_order(order_id), prefs)
+
+    @app.post("/api/food/orders/{order_id}/ordered")
+    def mark_food_ordered(order_id: int):
+        o = food_or_404(order_id)
+        if not db.update_food_order(order_id, where_status=("approved",), status="ordered"):
+            raise HTTPException(409, f"Can't mark as ordered: this order is {o['status']}")
+        return food_json(db.get_food_order(order_id))
+
+    @app.post("/api/food/orders/{order_id}/cancel")
+    def cancel_food_order(order_id: int):
+        """Cancels the plan in Aide. (An order already placed on Swiggy can't be cancelled from here.)"""
+        o = food_or_404(order_id)
+        if not db.update_food_order(order_id, where_status=("planned", "approved"), status="cancelled"):
+            raise HTTPException(409, f"Can't cancel: this order is {o['status']}")
+        return food_json(db.get_food_order(order_id))
 
     @app.put("/api/rules")
     def put_rules(body: RulesIn):
