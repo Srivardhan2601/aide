@@ -16,7 +16,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from .config import BUCKET_LABELS, CHANNELS, MINUTES_PER_REPLY, Settings
+from .classifier import guess_group
+from .config import BUCKET_LABELS, CHANNELS, MINUTES_PER_REPLY, Settings, load_profile, load_rules, save_json
 from .db import DB, iso, local_day, parse_iso, streak, utcnow
 from . import gmail as gmail_mod
 from .drafter import get_drafter
@@ -48,6 +49,32 @@ class ApproveIn(BaseModel):
     draft: str | None = Field(default=None, min_length=1, max_length=10_000)
 
 
+class ProfileIn(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    form_of_address: str | None = Field(default=None, alias="formOfAddress", min_length=1, max_length=60)
+    availability: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class RulesIn(BaseModel):
+    auto: list[str] = Field(default_factory=list, max_length=30)
+    ask: list[str] = Field(default_factory=list, max_length=30)
+    never: list[str] = Field(default_factory=list, max_length=30)
+
+
+def _norm(s: str | None) -> str:
+    return " ".join((s or "").split()).casefold()
+
+
+def _clean_rules(items: list[str]) -> list[str]:
+    out, seen = [], set()
+    for t in items:
+        t = " ".join(t.split())[:200]
+        if t and _norm(t) not in seen:
+            seen.add(_norm(t))
+            out.append(t)
+    return out
+
+
 def approval_json(r) -> dict:
     return {
         "id": r["id"],
@@ -75,6 +102,17 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
     drafter = drafter or get_drafter(settings.model, settings.fallbacks)
     if gmail is None and settings.gmail:
         gmail = gmail_mod.connect()  # None (with a clear log line) if not signed in yet
+    # Recent replies you edited become examples of your voice for future drafts.
+    drafter.learned_source = lambda: db.list_learned(limit=8)
+
+    def learn_from(r) -> None:
+        """If you changed Aide's draft before it was sent, remember your version."""
+        final, ai = r["draft"], r["ai_draft"] or r["draft"]
+        if r["bucket"] == "never" or len(final.strip()) < 2 or _norm(final) == _norm(ai):
+            return
+        db.add_learned(approval_id=r["id"], channel=r["channel"], sender=r["sender"],
+                       group_name=guess_group(r["sender"]), message=r["original"], ai_draft=ai, reply=final)
+        log.info("Learned from your edit on approval %s.", r["id"])
 
     def ingest(channel: str, sender: str, text: str) -> int:
         """Store an incoming message, draft a reply and queue it. Returns the approval id."""
@@ -114,6 +152,10 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
                 send_reply(db, approval_id=r["id"], channel=r["channel"], recipient=r["sender"], text=r["draft"],
                            gmail=gmail)
                 db.bump_stat("handled")
+                try:
+                    learn_from(r)
+                except Exception:  # noqa: BLE001 - learning must never block sending
+                    log.exception("Couldn't record a learned example for approval %s.", r["id"])
                 n += 1
             except Exception:  # noqa: BLE001 - never lose a reply silently
                 log.exception("Sending approval %s failed; returning it to pending.", r["id"])
@@ -219,8 +261,8 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
             conflict(r, "regenerate")
         d = drafter.draft(channel=r["channel"], sender=r["sender"], text=r["original"], tone=body.tone,
                           previous_draft=r["draft"])
-        if not db.update_approval(approval_id, where_status=("pending",), draft=d.draft, tone=body.tone,
-                                  confidence=d.confidence, bucket=d.bucket, reason=d.reason):
+        if not db.update_approval(approval_id, where_status=("pending",), draft=d.draft, ai_draft=d.draft,
+                                  tone=body.tone, confidence=d.confidence, bucket=d.bucket, reason=d.reason):
             conflict(db.get_approval(approval_id), "regenerate")
         return approval_json(db.get_approval(approval_id))
 
@@ -267,6 +309,76 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
     @app.get("/api/sent")
     def list_sent():
         return [dict(r) for r in db.list_sent()]
+
+    # ----- activity, learning, profile, rules --------------------------------
+    @app.get("/api/activity")
+    def activity(limit: int = Query(default=100, ge=1, le=500)):
+        """Replies that were sent or skipped, newest first."""
+        return [{
+            "id": r["id"],
+            "channel": r["channel"],
+            "from": r["sender"],
+            "status": "sent" if r["status"] == "sent" else "skipped",
+            "text": r["draft"],
+            "original": r["original"],
+            "at": r["sent_at"] or r["updated_at"],
+            "transport": r["transport"],
+            "edited": _norm(r["draft"]) != _norm(r["ai_draft"] or r["draft"]),
+            "learned": bool(r["learned"]),
+        } for r in db.history(limit)]
+
+    @app.get("/api/learned")
+    def learned():
+        return [{"id": r["id"], "from": r["sender"], "channel": r["channel"], "group": r["group_name"],
+                 "message": r["message"], "aiDraft": r["ai_draft"], "reply": r["reply"], "at": r["created_at"]}
+                for r in db.list_learned()]
+
+    @app.delete("/api/learned/{learned_id}", status_code=204)
+    def forget(learned_id: int):
+        if not db.delete_learned(learned_id):
+            raise HTTPException(404, "Not found")
+
+    def profile_json(p: dict) -> dict:
+        return {
+            "name": p.get("name", ""),
+            "formOfAddress": p.get("form_of_address", {}).get("value", ""),
+            "availability": p.get("availability", {}).get("value", ""),
+            "needsConfirming": [k for k in ("form_of_address", "availability") if p.get(k, {}).get("confirm")],
+            "exampleReplies": len(p.get("example_replies") or []),
+            "learnedReplies": len(db.list_learned()),
+        }
+
+    @app.get("/api/profile")
+    def get_profile():
+        return profile_json(load_profile())
+
+    @app.patch("/api/profile")
+    def patch_profile(body: ProfileIn):
+        p = load_profile()
+        for key, value in (("form_of_address", body.form_of_address), ("availability", body.availability)):
+            if value is not None:
+                p[key] = {"value": " ".join(value.split()), "confirm": False}
+        save_json("style_profile.json", p)
+        return profile_json(p)
+
+    def rules_json(r: dict) -> dict:
+        b = r.get("buckets", {})
+        return {**{k: b.get(k, {}).get("covers", []) for k in ("auto", "ask", "never")},
+                "hardRules": r.get("hard_rules", [])}
+
+    @app.get("/api/rules")
+    def get_rules():
+        return rules_json(load_rules())
+
+    @app.put("/api/rules")
+    def put_rules(body: RulesIn):
+        """Edit what each bucket covers. These guide Claude's labels; the safety rules
+        (money, deadlines, personal info) are enforced in code and always apply."""
+        r = load_rules()
+        for k in ("auto", "ask", "never"):
+            r.setdefault("buckets", {}).setdefault(k, {})["covers"] = _clean_rules(getattr(body, k))
+        save_json("rules.json", r)
+        return rules_json(r)
 
     # The UI and the API share an origin. Mounted last so /api routes win.
     if settings.ui_dir.is_dir():

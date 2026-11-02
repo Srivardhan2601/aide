@@ -170,6 +170,12 @@
     offline: false, // the backend couldn't be reached; showing sample data
     sending: {}, // approval id -> 'sending' | 'sent' while the undo window runs
     regenerating: {}, // approval id -> tone being generated
+    // Live Activity / Rules / Settings data (null until loaded from the backend).
+    profile: null, // { name, formOfAddress, availability, needsConfirming, exampleReplies, learnedReplies }
+    learned: null, // replies Aide learned from your edits
+    hardRules: [], // safety rules enforced in code (read-only in the UI)
+    liveRules: false, // state.rules came from the backend, so edits are saved there
+    liveActivity: false,
   };
 
   // Replies still waiting on you (cards that are mid-send don't count).
@@ -781,7 +787,7 @@
 
   // ===== View: Activity =====================================================
   const TYPE_ICON = { reply: 'mail', meeting: 'calendar', flag: 'flag', summary: 'inbox' };
-  const STATUS_LABEL = { sent: 'Sent', scheduled: 'Scheduled', flagged: 'Flagged', undone: 'Undone', failed: 'Failed' };
+  const STATUS_LABEL = { sent: 'Sent', skipped: 'Skipped', scheduled: 'Scheduled', flagged: 'Flagged', undone: 'Undone', failed: 'Failed' };
 
   function viewActivity() {
     const f = state.activityFilter;
@@ -808,13 +814,15 @@
             ${(() => {
               let last = null;
               return items.map((e) => {
-                const day = e.time === 'Yesterday' ? 'Yesterday' : 'Today'; // TODO(api): group by real timestamps
+                const day = e.at ? dayLabel(e.at) : (e.time === 'Yesterday' ? 'Yesterday' : 'Today');
                 const sep = day !== last ? `<li class="day-sep" role="separator"><span>${day}</span></li>` : '';
                 last = day;
                 return sep + tlItem(e);
               }).join('');
             })()}
-          </ol>` : emptyState('activity', 'Nothing matches these filters', 'Try another channel or status.')}
+          </ol>` : (state.liveActivity && !state.activity.length
+            ? emptyState('activity', 'Nothing here yet', `Replies you send or skip will show up here.`)
+            : emptyState('activity', 'Nothing matches these filters', 'Try another channel or status.'))}
       </div>`;
   }
 
@@ -823,9 +831,11 @@
       <div class="tl-icon">${icon(TYPE_ICON[e.type] || 'activity')}</div>
       <div class="tl-body">
         <div class="tl-text">${esc(e.text)}</div>
-        <div class="tl-meta">${channelBadge(e.channel)}<span aria-hidden="true">·</span>${esc(e.time)}</div>
+        ${e.detail ? `<div class="tl-detail">"${esc(e.detail)}"</div>` : ''}
+        <div class="tl-meta">${channelBadge(e.channel)}<span aria-hidden="true">·</span>${esc(e.time)}${e.transport === 'mock' ? '<span aria-hidden="true">·</span><span title="Sending is simulated for this app until it is connected">simulated</span>' : ''}</div>
       </div>
       <div class="tl-right">
+        ${e.learned ? `<span class="pill s-learned" title="You edited this before sending, so ${esc(M.agent.name)} learned from it">${icon('sparkle')}Learned</span>` : ''}
         <span class="pill s-${e.status}">${STATUS_LABEL[e.status] || e.status}</span>
         ${e.undoable && e.status !== 'undone' ? `<button class="btn btn-ghost btn-sm" data-action="undo-activity" data-id="${e.id}">${icon('undo')}Undo</button>` : ''}
       </div>
@@ -980,7 +990,13 @@
   function viewRules() {
     return `
       <div class="page page-wide">
-        <p class="page-sub">Decide how much ${esc(M.agent.name)} can do on its own. Rules are checked top to bottom, and "Never do" always wins.</p>
+        <p class="page-sub">Decide how much ${esc(M.agent.name)} can do on its own. Rules are checked top to bottom, and "Never do" always wins.${state.liveRules ? ' Changes are saved and guide every new draft.' : ''}</p>
+        ${state.hardRules.length ? `
+          <section class="card hard-rules" aria-labelledby="hard-h">
+            <div class="rule-col-head">${icon('rules')}<h2 id="hard-h">Always on</h2></div>
+            <p class="rule-col-desc">Safety rules built into ${esc(M.agent.name)}. They apply to every draft and can't be switched off here.</p>
+            <ul>${state.hardRules.map((r) => `<li>${esc(r)}</li>`).join('')}</ul>
+          </section>` : ''}
         <div class="rules-grid">
           ${RULE_COLS.map((col) => `
             <section class="card rule-col" aria-labelledby="col-${col.key}">
@@ -1012,17 +1028,61 @@
     const text = input.value.trim();
     state.editingRule = null;
     if (rule && text && text !== rule.text) {
-      rule.text = text; // TODO(api): PATCH /api/rules/:id { text }
+      rule.text = text;
+      syncRules();
       toast('Rule updated');
     }
     renderView();
   }
 
   // ===== View: Settings =====================================================
+  // "About you" + "Learned from your edits": live only (they read and write the backend).
+  function settingsLiveSections() {
+    const p = state.profile;
+    if (!p) return '';
+    const confirm = (k) => p.needsConfirming.includes(k) ? '<span class="pill s-flagged">Please confirm</span>' : '';
+    const learned = state.learned || [];
+    return `
+      <section class="section" aria-labelledby="s-you">
+        <div class="section-head"><h2 id="s-you">About you</h2><p>${esc(M.agent.name)} uses this in every draft.</p></div>
+        <form class="card about-form" data-form="profile">
+          <label class="field">
+            <span class="field-label">What should ${esc(M.agent.name)} call you? ${confirm('form_of_address')}</span>
+            <input class="input" id="pf-address" maxlength="60" value="${esc(p.formOfAddress)}" placeholder="e.g. Sri" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span class="field-label">When are you usually free? ${confirm('availability')}</span>
+            <input class="input" id="pf-availability" maxlength="200" value="${esc(p.availability)}" placeholder="e.g. after 6 PM on weekdays" autocomplete="off" />
+          </label>
+          <div class="about-actions"><button class="btn btn-primary btn-sm" type="submit">Save</button></div>
+        </form>
+      </section>
+
+      <section class="section" aria-labelledby="s-learned">
+        <div class="section-head"><h2 id="s-learned">Learned from your edits</h2>
+          <p>When you change a draft before sending, ${esc(M.agent.name)} keeps your version as an example of how you write. The newest 8 are used for every draft.</p></div>
+        ${learned.length ? `
+          <div class="list" role="list">
+            ${learned.map((l) => `
+              <div class="row learned-row" role="listitem">
+                <div class="row-main">
+                  <div class="row-sub">${channelBadge(M.channels[l.channel] ? l.channel : 'gmail')}<span aria-hidden="true">·</span>${esc(l.from)}<span aria-hidden="true">·</span>${esc(fmtWhen(l.at))}</div>
+                  <div class="learned-pair">
+                    <div><span class="field-label">${esc(M.agent.name)} wrote</span><p class="learned-ai">${esc(l.aiDraft)}</p></div>
+                    <div><span class="field-label">You sent</span><p class="learned-you">${esc(l.reply)}</p></div>
+                  </div>
+                </div>
+                <button class="icon-btn sm" data-action="forget-learned" data-id="${l.id}" aria-label="Forget this example" title="Forget this example">${icon('trash')}</button>
+              </div>`).join('')}
+          </div>` : `<div class="card learned-empty">${icon('sparkle')}<span>Nothing yet. Edit a draft before you approve it and ${esc(M.agent.name)} will start learning your style.</span></div>`}
+      </section>`;
+  }
+
   function viewSettings() {
     const s = state.settings;
     return `
       <div class="page">
+        ${settingsLiveSections()}
         <section class="section" aria-labelledby="s-accounts">
           <div class="section-head"><h2 id="s-accounts">Connected accounts</h2><p>Where ${esc(M.agent.name)} can read and reply.</p></div>
           <div class="list">
@@ -1162,6 +1222,7 @@
     state.animate = !same;
     renderAll();
     $('#content').scrollTop = 0;
+    if (state.live && ['activity', 'rules', 'settings'].includes(view)) loadExtras();
   }
 
   // ===== Sheets (More menu, quick capture) ==================================
@@ -1477,13 +1538,19 @@
       toast('Task removed', { action: 'Undo', onAction: () => { state.tasks.splice(idx, 0, removed); renderView(); } });
     },
 
+    'forget-learned': (el) => {
+      api(`/api/learned/${el.dataset.id}`, { method: 'DELETE' })
+        .then(() => { state.learned = (state.learned || []).filter((l) => String(l.id) !== el.dataset.id); renderView(); toast('Forgotten. It won’t be used for new drafts.'); })
+        .catch((err) => toast(`Couldn't remove it: ${err.message}`));
+    },
     'rule-edit': (el) => { state.editingRule = el.dataset.id; renderView(); },
     'rule-delete': (el) => {
       const list = state.rules[el.dataset.col];
       const idx = list.findIndex((r) => r.id === el.dataset.id);
-      const [removed] = list.splice(idx, 1); // TODO(api): DELETE /api/rules/:id
+      const [removed] = list.splice(idx, 1);
+      syncRules();
       renderView();
-      toast('Rule removed', { action: 'Undo', onAction: () => { list.splice(idx, 0, removed); renderView(); } });
+      toast('Rule removed', { action: 'Undo', onAction: () => { list.splice(idx, 0, removed); syncRules(); renderView(); } });
     },
 
     'account-toggle': (el) => {
@@ -1550,12 +1617,21 @@
       toast('Task added');
     }
 
+    if (kind === 'profile') {
+      const body = { formOfAddress: $('#pf-address').value.trim(), availability: $('#pf-availability').value.trim() };
+      if (!body.formOfAddress || !body.availability) { toast('Please fill in both fields'); return; }
+      api('/api/profile', { method: 'PATCH', body })
+        .then((p) => { state.profile = p; renderView(); toast('Saved. New drafts will use this.'); })
+        .catch((err) => toast(`Couldn't save: ${err.message}`));
+    }
+
     if (kind === 'rule') {
       const col = form.dataset.col;
       const input = $(`#add-${col}`);
       const text = input.value.trim();
       if (!text) return;
-      state.rules[col].push({ id: uid(), text }); // TODO(api): POST /api/rules { col, text }
+      state.rules[col].push({ id: uid(), text });
+      syncRules();
       renderView();
       $(`#add-${col}`).focus();
       toast(`Rule added to ${RULE_COLS.find((c) => c.key === col).title}`);
@@ -1716,6 +1792,7 @@
       state.approvals = next;
       state.stats = stats;
       state.live = true;
+      if (!wasLive) loadExtras();
       const wasOffline = state.offline;
       state.offline = false;
       if (render && (changed || statsChanged || wasOffline) && !focused) renderAll();
@@ -1724,6 +1801,59 @@
         state.offline = true;
         if (render) renderAll();
       }
+    }
+  }
+
+  // Activity history, rules, profile and learned replies. Loaded when going live and
+  // when one of those screens opens (they change rarely, so no 10s polling).
+  function dayLabel(isoStr) {
+    const d = new Date(isoStr);
+    if (isNaN(d)) return 'Earlier';
+    const today = new Date();
+    const y = new Date(); y.setDate(today.getDate() - 1);
+    if (d.toDateString() === today.toDateString()) return 'Today';
+    if (d.toDateString() === y.toDateString()) return 'Yesterday';
+    return d.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
+  }
+
+  async function loadExtras() {
+    try {
+      const [activity, rules, profile, learned] = await Promise.all([
+        api('/api/activity'), api('/api/rules'), api('/api/profile'), api('/api/learned'),
+      ]);
+      state.activity = activity.map((a) => ({
+        id: 'h' + a.id,
+        type: 'reply',
+        channel: M.channels[a.channel] ? a.channel : 'gmail',
+        status: a.status,
+        at: a.at,
+        time: fmtWhen(a.at),
+        text: a.status === 'sent' ? `Sent your reply to ${a.from}` : `Skipped the draft for ${a.from}`,
+        detail: a.text,
+        learned: a.learned,
+        transport: a.transport,
+        undoable: false,
+      }));
+      state.liveActivity = true;
+      if (state.editingRule === null) {
+        state.rules = Object.fromEntries(['auto', 'ask', 'never'].map((k) => [k, rules[k].map((text) => ({ id: uid(), text }))]));
+        state.liveRules = true;
+      }
+      state.hardRules = rules.hardRules || [];
+      state.profile = profile;
+      state.learned = learned;
+      if (['activity', 'rules', 'settings'].includes(state.view) && !document.activeElement.matches('input, textarea')) renderView();
+    } catch (e) { /* stay on sample data for these screens */ }
+  }
+
+  // Save the three rule lists to rules.json. On failure, reload what the server has.
+  async function syncRules() {
+    if (!state.liveRules) return;
+    try {
+      await api('/api/rules', { method: 'PUT', body: Object.fromEntries(['auto', 'ask', 'never'].map((k) => [k, state.rules[k].map((r) => r.text)])) });
+    } catch (e) {
+      toast(`Couldn't save the rule: ${e.message}`);
+      loadExtras();
     }
   }
 

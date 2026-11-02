@@ -66,8 +66,13 @@ Tests (no API key needed): `python -m pytest`
 | POST | `/api/approvals/{id}/approve` | `{draft?}` | Status becomes `sending`, `sendAt` = now + 5s |
 | POST | `/api/approvals/{id}/undo` | | Only before `sendAt`; back to `pending` |
 | GET | `/api/stats` | | `{handledToday, pending, timeSavedMinutes, streakDays, timeSavedWeek[7]}` |
-| GET | `/api/sent` | | Mock "sent" log |
-| GET | `/api/health` | | Which drafter is active |
+| GET | `/api/sent` | | Sent log (`transport`: `gmail` or `mock`) |
+| GET | `/api/activity` | | Sent and skipped replies, newest first |
+| GET | `/api/learned` | | Replies learned from your edits |
+| DELETE | `/api/learned/{id}` | | Forget one |
+| GET/PATCH | `/api/profile` | `{formOfAddress?, availability?}` | Edits `config/style_profile.json` |
+| GET/PUT | `/api/rules` | `{auto[], ask[], never[]}` | Edits what each bucket covers in `config/rules.json` (hard rules stay fixed) |
+| GET | `/api/health` | | Which drafter is active, and whether Gmail is connected |
 
 ## How drafting works
 
@@ -85,6 +90,11 @@ Tests (no API key needed): `python -m pytest`
   confidence, with the reason shown on the card.
 - `app/gmail.py` reads unread Primary-inbox mail into the queue and sends approved replies in the
   original thread. It only has read and send access, and never marks mail as read.
+- **Learning from your edits:** when you change a draft before it's sent, your version is saved in
+  the `learned_examples` table (Aide's original draft is kept in `approvals.ai_draft`). The newest 8
+  are added to the prompt as examples of your voice, next to `example_replies`. Unchanged replies,
+  rewrites from the tone buttons, skipped drafts and "Never" (spam) replies aren't learned. You can
+  see and forget them in Settings → "Learned from your edits".
 - Every message lands in Approvals for now, whatever its bucket (`auto_send_enabled: false`).
 
 ## Still needed from you

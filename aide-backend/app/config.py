@@ -50,9 +50,22 @@ class Settings:
         )
 
 
+def config_dir() -> Path:
+    """Where style_profile.json and rules.json live (AIDE_CONFIG_DIR overrides, e.g. in tests)."""
+    return Path(os.environ.get("AIDE_CONFIG_DIR", CONFIG_DIR))
+
+
 def load_json(name: str) -> dict:
-    with open(CONFIG_DIR / name, encoding="utf-8") as f:
+    with open(config_dir() / name, encoding="utf-8") as f:
         return json.load(f)
+
+
+def save_json(name: str, data: dict) -> None:
+    """Write atomically: a crash mid-write can't leave a half-written config file."""
+    path = config_dir() / name
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def load_profile() -> dict:

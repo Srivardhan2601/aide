@@ -43,6 +43,20 @@ CREATE TABLE IF NOT EXISTS sent (
     sent_at     TEXT NOT NULL
 );
 
+-- Replies you edited before sending: Aide's draft vs what you actually sent.
+-- The most recent ones are shown to Claude as examples of your voice.
+CREATE TABLE IF NOT EXISTS learned_examples (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    approval_id INTEGER NOT NULL UNIQUE REFERENCES approvals(id),
+    channel     TEXT NOT NULL,
+    sender      TEXT NOT NULL,
+    group_name  TEXT NOT NULL,
+    message     TEXT NOT NULL,
+    ai_draft    TEXT NOT NULL,
+    reply       TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+);
+
 -- Where a Gmail message came from, so an approved reply goes back into the same thread.
 CREATE TABLE IF NOT EXISTS gmail_links (
     message_id     INTEGER PRIMARY KEY REFERENCES messages(id),
@@ -90,7 +104,16 @@ class DB:
         if self.path != ":memory:":
             self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns that older databases don't have yet."""
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(approvals)")}
+        if "ai_draft" not in cols:
+            # Aide's latest draft, kept separately so we can tell when you edited it.
+            self.conn.execute("ALTER TABLE approvals ADD COLUMN ai_draft TEXT")
+            self.conn.execute("UPDATE approvals SET ai_draft = draft WHERE ai_draft IS NULL")
 
     def close(self) -> None:
         with self.lock:
@@ -111,10 +134,10 @@ class DB:
         now = iso(utcnow())
         with self.lock:
             cur = self.conn.execute(
-                """INSERT INTO approvals (message_id, channel, sender, original, draft, tone, bucket,
+                """INSERT INTO approvals (message_id, channel, sender, original, draft, ai_draft, tone, bucket,
                                           reason, confidence, status, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
-                (message_id, channel, sender, original, draft, tone, bucket, reason, confidence, now, now),
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+                (message_id, channel, sender, original, draft, draft, tone, bucket, reason, confidence, now, now),
             )
             self.conn.commit()
             return cur.lastrowid
@@ -171,6 +194,41 @@ class DB:
     def list_sent(self) -> list[sqlite3.Row]:
         with self.lock:
             return self.conn.execute("SELECT * FROM sent ORDER BY id").fetchall()
+
+    # ----- learning from edits ----------------------------------------------
+    def add_learned(self, *, approval_id: int, channel: str, sender: str, group_name: str,
+                    message: str, ai_draft: str, reply: str) -> None:
+        with self.lock:
+            self.conn.execute(
+                """INSERT OR IGNORE INTO learned_examples
+                   (approval_id, channel, sender, group_name, message, ai_draft, reply, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (approval_id, channel, sender, group_name, message, ai_draft, reply, iso(utcnow())),
+            )
+            self.conn.commit()
+
+    def list_learned(self, limit: int | None = None) -> list[sqlite3.Row]:
+        """Newest first."""
+        with self.lock:
+            sql = "SELECT * FROM learned_examples ORDER BY created_at DESC, id DESC"
+            return self.conn.execute(sql + (" LIMIT ?" if limit else ""), (limit,) if limit else ()).fetchall()
+
+    def delete_learned(self, learned_id: int) -> bool:
+        with self.lock:
+            cur = self.conn.execute("DELETE FROM learned_examples WHERE id = ?", (learned_id,))
+            self.conn.commit()
+            return cur.rowcount == 1
+
+    # ----- history ----------------------------------------------------------
+    def history(self, limit: int = 100) -> list[sqlite3.Row]:
+        """Sent and skipped replies, newest first, for the Activity screen."""
+        with self.lock:
+            return self.conn.execute(
+                """SELECT a.*, s.transport, s.sent_at,
+                          EXISTS(SELECT 1 FROM learned_examples l WHERE l.approval_id = a.id) AS learned
+                   FROM approvals a LEFT JOIN sent s ON s.approval_id = a.id
+                   WHERE a.status IN ('sent', 'rejected')
+                   ORDER BY a.updated_at DESC, a.id DESC LIMIT ?""", (limit,)).fetchall()
 
     # ----- gmail ------------------------------------------------------------
     def gmail_seen(self, gmail_id: str) -> bool:
