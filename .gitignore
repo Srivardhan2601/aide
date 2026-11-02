@@ -13,6 +13,9 @@ __pycache__/
 # Secrets: never commit these
 .env
 .env.*
+aide-backend/secrets/
+credentials.json
+token.json
 
 # Local tooling
 .claude/

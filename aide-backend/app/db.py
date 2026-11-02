@@ -43,6 +43,17 @@ CREATE TABLE IF NOT EXISTS sent (
     sent_at     TEXT NOT NULL
 );
 
+-- Where a Gmail message came from, so an approved reply goes back into the same thread.
+CREATE TABLE IF NOT EXISTS gmail_links (
+    message_id     INTEGER PRIMARY KEY REFERENCES messages(id),
+    gmail_id       TEXT NOT NULL UNIQUE,
+    thread_id      TEXT NOT NULL,
+    reply_to       TEXT NOT NULL,   -- address the reply goes to
+    subject        TEXT NOT NULL DEFAULT '',
+    rfc_message_id TEXT NOT NULL DEFAULT '',  -- Message-ID header, for In-Reply-To
+    references_hdr TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS daily_stats (
     day      TEXT PRIMARY KEY,          -- local date, YYYY-MM-DD
     handled  INTEGER NOT NULL DEFAULT 0, -- replies sent
@@ -160,6 +171,27 @@ class DB:
     def list_sent(self) -> list[sqlite3.Row]:
         with self.lock:
             return self.conn.execute("SELECT * FROM sent ORDER BY id").fetchall()
+
+    # ----- gmail ------------------------------------------------------------
+    def gmail_seen(self, gmail_id: str) -> bool:
+        with self.lock:
+            return self.conn.execute("SELECT 1 FROM gmail_links WHERE gmail_id = ?", (gmail_id,)).fetchone() is not None
+
+    def add_gmail_link(self, message_id: int, *, gmail_id: str, thread_id: str, reply_to: str,
+                       subject: str, rfc_message_id: str, references_hdr: str) -> None:
+        with self.lock:
+            self.conn.execute(
+                """INSERT INTO gmail_links (message_id, gmail_id, thread_id, reply_to, subject, rfc_message_id, references_hdr)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (message_id, gmail_id, thread_id, reply_to, subject, rfc_message_id, references_hdr),
+            )
+            self.conn.commit()
+
+    def gmail_link_for_approval(self, approval_id: int) -> sqlite3.Row | None:
+        with self.lock:
+            return self.conn.execute(
+                "SELECT g.* FROM gmail_links g JOIN approvals a ON a.message_id = g.message_id WHERE a.id = ?",
+                (approval_id,)).fetchone()
 
     # ----- stats ------------------------------------------------------------
     def bump_stat(self, column: str, day: str | None = None) -> None:

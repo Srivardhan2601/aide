@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Literal
@@ -17,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .config import BUCKET_LABELS, CHANNELS, MINUTES_PER_REPLY, Settings
 from .db import DB, iso, local_day, parse_iso, streak, utcnow
+from . import gmail as gmail_mod
 from .drafter import get_drafter
 from .sender import send_reply
 
@@ -67,10 +69,40 @@ def approval_json(r) -> dict:
 
 
 # ===== App factory ===========================================================
-def create_app(settings: Settings | None = None, drafter=None) -> FastAPI:
+def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> FastAPI:
     settings = settings or Settings.from_env()
     db = DB(settings.db_path)
     drafter = drafter or get_drafter(settings.model, settings.fallbacks)
+    if gmail is None and settings.gmail:
+        gmail = gmail_mod.connect()  # None (with a clear log line) if not signed in yet
+
+    def ingest(channel: str, sender: str, text: str) -> int:
+        """Store an incoming message, draft a reply and queue it. Returns the approval id."""
+        msg_id = db.add_message(channel, sender, text)
+        d = drafter.draft(channel=channel, sender=sender, text=text)
+        # For now every message lands in the approval queue, whatever its bucket.
+        aid = db.add_approval(message_id=msg_id, channel=channel, sender=sender, original=text, draft=d.draft,
+                              tone="default", bucket=d.bucket, reason=d.reason, confidence=d.confidence)
+        log.info("New %s message from %s -> approval %s [%s]", channel, sender, aid, d.bucket)
+        return aid
+
+    poll_lock = threading.Lock()  # one inbox check at a time, so an email is never queued twice
+
+    def poll_gmail() -> int:
+        """Queue new unread inbox mail. Returns how many emails were queued."""
+        if gmail is None:
+            return 0
+        n = 0
+        with poll_lock:
+            for e in gmail.fetch_new(db.gmail_seen):
+                if db.gmail_seen(e.gmail_id):
+                    continue
+                aid = ingest("gmail", e.sender_name, e.text)
+                db.add_gmail_link(db.get_approval(aid)["message_id"], gmail_id=e.gmail_id, thread_id=e.thread_id,
+                                  reply_to=e.reply_to, subject=e.subject, rfc_message_id=e.rfc_message_id,
+                                  references_hdr=e.references)
+                n += 1
+        return n
 
     def process_due() -> int:
         """Send every approval whose undo window has closed. Returns how many were sent."""
@@ -79,7 +111,8 @@ def create_app(settings: Settings | None = None, drafter=None) -> FastAPI:
             if not db.claim_for_sending(r["id"], r["send_at"]):
                 continue  # undone or re-approved in the meantime
             try:
-                send_reply(db, approval_id=r["id"], channel=r["channel"], recipient=r["sender"], text=r["draft"])
+                send_reply(db, approval_id=r["id"], channel=r["channel"], recipient=r["sender"], text=r["draft"],
+                           gmail=gmail)
                 db.bump_stat("handled")
                 n += 1
             except Exception:  # noqa: BLE001 - never lose a reply silently
@@ -95,14 +128,28 @@ def create_app(settings: Settings | None = None, drafter=None) -> FastAPI:
                 log.exception("send loop error")
             await asyncio.sleep(0.25)
 
+    async def gmail_loop():
+        while True:
+            try:
+                n = await asyncio.to_thread(poll_gmail)
+                if n:
+                    log.info("Queued %s new email(s) from Gmail.", n)
+            except Exception:  # noqa: BLE001 - a network blip shouldn't stop the app
+                log.exception("Gmail check failed; will retry.")
+            await asyncio.sleep(settings.gmail_poll_seconds)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        task = asyncio.create_task(send_loop())
-        log.info("Aide backend ready. Drafter: %s. Undo window: %ss. DB: %s", drafter.kind, settings.undo_seconds, settings.db_path)
+        tasks = [asyncio.create_task(send_loop())]
+        if gmail is not None and settings.gmail_poll_seconds > 0:  # 0 = manual checks only (tests)
+            tasks.append(asyncio.create_task(gmail_loop()))
+        log.info("Aide backend ready. Drafter: %s. Gmail: %s. Undo window: %ss. DB: %s", drafter.kind,
+                 "connected" if gmail is not None else "off", settings.undo_seconds, settings.db_path)
         try:
             yield
         finally:
-            task.cancel()
+            for t in tasks:
+                t.cancel()
             db.close()
 
     app = FastAPI(title="Aide", lifespan=lifespan)
@@ -110,6 +157,7 @@ def create_app(settings: Settings | None = None, drafter=None) -> FastAPI:
     app.state.drafter = drafter
     app.state.settings = settings
     app.state.process_due = process_due
+    app.state.poll_gmail = poll_gmail
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -131,20 +179,14 @@ def create_app(settings: Settings | None = None, drafter=None) -> FastAPI:
     @app.get("/api/health")
     def health():
         return {"ok": True, "drafter": drafter.kind, "model": settings.model if drafter.kind == "claude" else None,
-                "undoSeconds": settings.undo_seconds}
+                "gmail": gmail is not None, "undoSeconds": settings.undo_seconds}
 
     @app.post("/api/messages", status_code=201)
     def post_message(body: MessageIn):
         channel = body.channel.strip().lower()
         if channel not in CHANNELS:
             raise HTTPException(422, f"Unknown channel '{body.channel}'. Use one of: {', '.join(CHANNELS)}")
-        sender, text = body.sender.strip(), body.text.strip()
-        msg_id = db.add_message(channel, sender, text)
-        d = drafter.draft(channel=channel, sender=sender, text=text)
-        # For now every message lands in the approval queue, whatever its bucket.
-        aid = db.add_approval(message_id=msg_id, channel=channel, sender=sender, original=text, draft=d.draft,
-                              tone="default", bucket=d.bucket, reason=d.reason, confidence=d.confidence)
-        log.info("New %s message from %s -> approval %s [%s]", channel, sender, aid, d.bucket)
+        aid = ingest(channel, body.sender.strip(), body.text.strip())
         return approval_json(db.get_approval(aid))
 
     @app.get("/api/approvals")

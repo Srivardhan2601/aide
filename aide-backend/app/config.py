@@ -11,7 +11,7 @@ CONFIG_DIR = BACKEND_DIR / "config"
 DEFAULT_UI_DIR = BACKEND_DIR.parent / "aide-ui"
 DEFAULT_DB = BACKEND_DIR / "aide.db"
 
-DEFAULT_MODEL = "claude-sonnet-5-5"
+DEFAULT_MODEL = "claude-opus-5-5"  # set AIDE_MODEL=claude-sonnet-5-5 for roughly half the cost
 
 # Channels the UI knows about (aide-ui/mock-data.js `channels`).
 CHANNELS = ("gmail", "outlook", "whatsapp", "instagram", "x", "telegram", "slack", "linkedin", "calendar")
@@ -29,6 +29,9 @@ class Settings:
     model: str = DEFAULT_MODEL
     # Server-side refusal fallbacks ("default" or "off"). See drafter.py.
     fallbacks: str = "default"
+    # Gmail: off unless AIDE_GMAIL=on (and you've run gmail_auth.py). See GMAIL_SETUP.md.
+    gmail: bool = False
+    gmail_poll_seconds: float = 60.0
     cors_origins: list[str] = field(default_factory=lambda: [
         "http://localhost:8000", "http://127.0.0.1:8000",
         "http://localhost:5173", "http://127.0.0.1:5173",
@@ -42,6 +45,8 @@ class Settings:
             undo_seconds=float(os.environ.get("AIDE_UNDO_SECONDS", "5")),
             model=os.environ.get("AIDE_MODEL", DEFAULT_MODEL),
             fallbacks=os.environ.get("AIDE_FALLBACKS", "default"),
+            gmail=os.environ.get("AIDE_GMAIL", "off").lower() in ("on", "1", "true", "yes"),
+            gmail_poll_seconds=float(os.environ.get("AIDE_GMAIL_POLL_SECONDS", "60")),
         )
 
 

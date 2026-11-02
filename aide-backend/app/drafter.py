@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 from .classifier import Classification, classify, guess_group, stricter
 from .config import BUCKET_LABELS, load_profile, load_rules
+from .guardrails import violations
 
 log = logging.getLogger("aide.drafter")
 
@@ -284,7 +285,7 @@ class ClaudeDrafter:
         except (StopIteration, KeyError, ValueError, AttributeError) as e:
             log.error("Couldn't parse Claude's output (%s, stop_reason=%s). Using a template draft.", e, resp.stop_reason)
             return self._fallback(channel, sender, text, tone, previous_draft, "Couldn't parse the AI draft.")
-        return enforce_floor(out, text, sender)
+        return enforce_floor(out, text, sender, channel=channel, tone=tone, previous_draft=previous_draft)
 
     def _fallback(self, channel, sender, text, tone, previous_draft, note) -> Draft:
         d = self.mock.draft(channel=channel, sender=sender, text=text, tone=tone, previous_draft=previous_draft)
@@ -293,14 +294,29 @@ class ClaudeDrafter:
         return d
 
 
-def enforce_floor(d: Draft, text: str, sender: str) -> Draft:
-    """The rule-based classifier is a floor: Claude can make a label stricter, never looser."""
+def enforce_floor(d: Draft, text: str, sender: str, *, channel: str = "", tone: str = "default",
+                  previous_draft: str | None = None) -> Draft:
+    """Safety floor for Claude drafts.
+
+    1. Label: the rule-based classifier is a floor. Claude can make a label stricter, never looser.
+    2. Text: if the draft breaks a hard rule (agrees to money or a deadline, commits the user,
+       leaks personal details), it's replaced with the safe template for that kind of message.
+    """
     c = classify(text, sender)
     final = stricter(d.bucket, c.bucket)
     if final != d.bucket:
         d.bucket, d.reason = final, c.reason
     if c.category == "emotional":
         d.bucket = stricter(d.bucket, "ask")
+
+    broken = violations(d.draft, c)
+    if broken:
+        log.warning("Claude draft broke a hard rule (%s); replacing it with a safe template.", ", ".join(broken))
+        safe = MockDrafter().draft(channel=channel, sender=sender, text=text, tone=tone, previous_draft=previous_draft)
+        d.draft = safe.draft
+        d.bucket = stricter(d.bucket, safe.bucket)
+        d.confidence = "low"
+        d.reason = f"{c.reason} The AI draft {broken[0]}, so Aide used a safe reply instead."
     return d
 
 
