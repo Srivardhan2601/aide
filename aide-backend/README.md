@@ -103,6 +103,30 @@ Tests (no API key needed): `python -m pytest`
   see and forget them in Settings → "Learned from your edits".
 - Every message lands in Approvals for now, whatever its bucket (`auto_send_enabled: false`).
 
+## Deadlines, daily brief, quiet mode, notifications
+
+- **Deadlines** (`app/deadlines.py`): every incoming message is checked for a written date *and*
+  what it's for ("report due Monday", "DBMS viva on 12th at 9:30", "review Friday 11 AM",
+  "invoice due Nov 15"). Exams, assignments, meetings and payments land on the Tasks screen.
+  It's rule-based, so it never guesses: no date, or no purpose, means nothing is added. Dates in
+  messages labeled "Never" (spam) are ignored. You can add, tick off and remove your own too.
+- **Daily brief** (`GET /api/brief`): the "Today" card on Home shows what needs you, anything
+  overdue, due today or tomorrow (exams are called out), the rest of the week, and open food carts.
+- **Quiet mode** (`GET/PUT /api/quiet`): for study time. Drafting continues, but only urgent
+  messages ("urgent", "asap", "emergency", "call me"…) and people on your allow list can alert
+  you. Ending it tells you how many replies are waiting.
+- **Notifications** (in the app, per device): new drafts, deadlines an hour before, and the
+  morning brief at your chosen time. They appear while Aide is open in a tab or as the installed
+  app; turn them on in Settings → Notifications.
+
+| Method | Path | Body | Notes |
+|---|---|---|---|
+| GET | `/api/brief` | | Headline, urgent drafts, overdue/today/tomorrow/this-week deadlines, quiet mode |
+| GET | `/api/deadlines?include_done=` | | Sorted by date and time |
+| POST | `/api/deadlines` | `{title, kind, dueDate, dueTime?}` | `kind`: exam, assignment, meeting, payment, other |
+| PATCH / DELETE | `/api/deadlines/{id}` | `{done?, title?, dueDate?, dueTime?}` | |
+| GET / PUT | `/api/quiet` | `{until: ISO or null, allow?: [names]}` | `held` = non-urgent replies waiting |
+
 ## Food orders (Swiggy / Zomato)
 
 Swiggy and Zomato have official AI ordering connectors, but they don't allow third-party apps

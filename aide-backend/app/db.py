@@ -73,6 +73,28 @@ CREATE TABLE IF NOT EXISTS food_orders (
     updated_at  TEXT NOT NULL
 );
 
+-- Deadlines, exams, meetings and payments: found in messages, or added by you.
+CREATE TABLE IF NOT EXISTS deadlines (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    title       TEXT NOT NULL,
+    kind        TEXT NOT NULL CHECK (kind IN ('exam', 'assignment', 'meeting', 'payment', 'other')),
+    due_date    TEXT NOT NULL,             -- local YYYY-MM-DD
+    due_time    TEXT,                      -- local HH:MM, optional
+    source      TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'message')),
+    message_id  INTEGER REFERENCES messages(id),
+    sender      TEXT NOT NULL DEFAULT '',
+    channel     TEXT NOT NULL DEFAULT '',
+    done        INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL,
+    UNIQUE (message_id, due_date, kind)
+);
+
+-- Small app settings (quiet mode, ...), stored as JSON values.
+CREATE TABLE IF NOT EXISTS kv (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 -- Where a Gmail message came from, so an approved reply goes back into the same thread.
 CREATE TABLE IF NOT EXISTS gmail_links (
     message_id     INTEGER PRIMARY KEY REFERENCES messages(id),
@@ -273,6 +295,55 @@ class DB:
         d = dict(r)
         d["items"] = json.loads(d["items"])
         return d
+
+    # ----- deadlines --------------------------------------------------------
+    def add_deadline(self, *, title: str, kind: str, due_date: str, due_time: str | None, source: str = "manual",
+                     message_id: int | None = None, sender: str = "", channel: str = "") -> int | None:
+        with self.lock:
+            cur = self.conn.execute(
+                """INSERT OR IGNORE INTO deadlines (title, kind, due_date, due_time, source, message_id, sender, channel, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (title, kind, due_date, due_time, source, message_id, sender, channel, iso(utcnow())))
+            self.conn.commit()
+            return cur.lastrowid if cur.rowcount else None
+
+    def list_deadlines(self, include_done: bool = False) -> list[sqlite3.Row]:
+        with self.lock:
+            sql = "SELECT * FROM deadlines" + ("" if include_done else " WHERE done = 0")
+            return self.conn.execute(sql + " ORDER BY due_date, COALESCE(due_time, '99:99'), id").fetchall()
+
+    def get_deadline(self, deadline_id: int) -> sqlite3.Row | None:
+        with self.lock:
+            return self.conn.execute("SELECT * FROM deadlines WHERE id = ?", (deadline_id,)).fetchone()
+
+    def update_deadline(self, deadline_id: int, **fields) -> bool:
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        with self.lock:
+            cur = self.conn.execute(f"UPDATE deadlines SET {cols} WHERE id = ?", (*fields.values(), deadline_id))
+            self.conn.commit()
+            return cur.rowcount == 1
+
+    def delete_deadline(self, deadline_id: int) -> bool:
+        with self.lock:
+            cur = self.conn.execute("DELETE FROM deadlines WHERE id = ?", (deadline_id,))
+            self.conn.commit()
+            return cur.rowcount == 1
+
+    # ----- settings ---------------------------------------------------------
+    def get_setting(self, key: str, default=None):
+        with self.lock:
+            r = self.conn.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
+        return json.loads(r["value"]) if r else default
+
+    def set_setting(self, key: str, value) -> None:
+        with self.lock:
+            self.conn.execute("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                              (key, json.dumps(value)))
+            self.conn.commit()
+
+    def approvals_since(self, since_iso: str) -> list[sqlite3.Row]:
+        with self.lock:
+            return self.conn.execute("SELECT * FROM approvals WHERE created_at >= ? ORDER BY created_at", (since_iso,)).fetchall()
 
     # ----- history ----------------------------------------------------------
     def history(self, limit: int = 100) -> list[sqlite3.Row]:

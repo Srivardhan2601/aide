@@ -87,6 +87,7 @@
     reason: a.reason,
     status: a.status,
     sendAt: a.sendAt,
+    urgent: !!a.urgent,
   });
 
   // ===== Icons ==============================================================
@@ -183,6 +184,10 @@
     hardRules: [], // safety rules enforced in code (read-only in the UI)
     liveRules: false, // state.rules came from the backend, so edits are saved there
     liveActivity: false,
+    brief: null, // /api/brief: what needs you today, deadlines, quiet mode
+    deadlines: null, // /api/deadlines (Tasks screen)
+    seenPending: null, // approval ids already seen, to spot new drafts for notifications
+    wasQuiet: false,
     // Food: carts planned and checked in Aide, then placed by Claude with the official connector.
     food: { orders: null, profile: null, app: null, busy: false, showPrefs: false },
   };
@@ -284,6 +289,7 @@
     $('#topbar').innerHTML = `
       <h1 class="page-title">${title}</h1>
       <div class="topbar-right">
+        ${quiet().active ? `<button class="status quiet" data-action="quiet-open" title="Quiet mode until ${esc(fmtClock(quiet().until))}">${icon('moon')}<span class="desktop-only">Quiet</span></button>` : ''}
         <span class="status ${on ? 'on' : 'off'}" role="status"><span class="dot"></span>${on ? 'Active' : 'Paused'}</span>
         <button class="icon-btn desktop-only" data-action="toggle-theme" aria-label="Switch to ${isDark() ? 'light' : 'dark'} mode">${icon(isDark() ? 'sun' : 'moon')}</button>
         <button class="pause-pill ${on ? '' : 'is-paused'}" data-action="toggle-agent" aria-label="${on ? 'Pause agent' : 'Resume agent'}">
@@ -372,6 +378,8 @@
           <h2 class="greet-title">Good ${part}, ${esc(M.user.name)}</h2>
           <p class="greet-sub">${esc(M.agent.name)} handled <b class="grad-text">${s.handledToday}</b> things today.</p>
         </header>
+
+        ${briefCard()}
 
         ${heroCard()}
 
@@ -962,6 +970,7 @@
   const TASK_LABEL = { running: 'In progress', scheduled: 'Scheduled', paused: 'Paused', done: 'Done' };
 
   function viewTasks() {
+    if (state.live && state.deadlines) return viewDeadlines(); // real deadlines from the server
     return `
       <div class="page">
         <form class="add-form" data-form="task" aria-label="Add task">
@@ -1045,6 +1054,266 @@
   }
 
   // ===== View: Settings =====================================================
+  // ===== Brief, deadlines, quiet mode, notifications ========================
+  const DL_ICON = { exam: 'flag', assignment: 'tasks', meeting: 'calendar', payment: 'inbox', other: 'clock' };
+  const KIND_NAME = { exam: 'Exam', assignment: 'Due', meeting: 'Meeting', payment: 'Payment', other: 'Task' };
+  const localDate = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const addDays = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return localDate(d); };
+  const fmt12 = (hhmm) => { const [h, m] = hhmm.split(':').map(Number); return new Date(2000, 0, 1, h, m).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); };
+  const fmtDay = (iso) => new Date(`${iso}T00:00`).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
+  const fmtClock = (isoStr) => new Date(isoStr).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
+  function dlWhen(d) {
+    const day = d.dueDate === localDate() ? 'Today' : d.dueDate === addDays(1) ? 'Tomorrow' : fmtDay(d.dueDate);
+    return d.dueTime ? `${day}, ${fmt12(d.dueTime)}` : day;
+  }
+
+  async function loadDeadlines() {
+    try {
+      state.deadlines = await api('/api/deadlines?include_done=true');
+      if (state.view === 'tasks' && !document.activeElement.matches('input, select')) renderView();
+    } catch (e) { /* keep sample tasks */ }
+  }
+
+  const quiet = () => (state.brief && state.brief.quiet) || { active: false, allow: [], held: 0 };
+
+  function briefCard() {
+    const b = state.brief;
+    if (!state.live || !b) return '';
+    const q = quiet();
+    const item = (d, overdue) => `
+      <li class="brief-item ${overdue ? 'is-overdue' : ''}">
+        <span class="bi-icon k-${d.kind}">${icon(DL_ICON[d.kind] || 'clock')}</span>
+        <span class="bi-title">${esc(d.title)}</span>
+        <span class="bi-when">${esc(overdue ? fmtDay(d.dueDate) : (d.dueTime ? fmt12(d.dueTime) : KIND_NAME[d.kind]))}</span>
+      </li>`;
+    const groups = [['Overdue', b.overdue, true], ['Today', b.today], ['Tomorrow', b.tomorrow]].filter((g) => g[1].length);
+    return `
+      <section class="card brief" aria-labelledby="brief-h">
+        <div class="brief-head">
+          <h3 id="brief-h">${icon('calendar')}Today</h3>
+          ${q.active ? `<span class="pill s-scheduled">${icon('moon')}Quiet until ${esc(fmtClock(q.until))}</span>` : ''}
+        </div>
+        <p class="brief-headline">${esc(b.headline)}</p>
+        ${b.urgent.length ? `
+          <button class="brief-urgent" data-action="nav" data-view="approvals">${icon('alert')}<span>Urgent: ${esc(b.urgent.map((u) => u.from).join(', '))}</span>${icon('chevron')}</button>` : ''}
+        ${groups.map(([label, list, overdue]) => `
+          <div class="brief-group">
+            <div class="brief-label">${label}</div>
+            <ul>${list.slice(0, 4).map((d) => item(d, overdue)).join('')}</ul>
+          </div>`).join('')}
+        ${b.thisWeek.length ? `<button class="brief-link" data-action="nav" data-view="tasks">${icon('tasks')}${b.thisWeek.length} more this week</button>` : ''}
+        ${b.foodOpen ? `<button class="brief-link" data-action="nav" data-view="food">${icon('food')}${b.foodOpen} food cart${b.foodOpen === 1 ? '' : 's'} waiting for you</button>` : ''}
+        <div class="brief-actions">
+          <button class="btn btn-ghost btn-sm" data-action="nav" data-view="tasks">${icon('tasks')}Deadlines</button>
+          ${q.active
+            ? `<button class="btn btn-secondary btn-sm" data-action="quiet-off">${icon('sun')}End quiet mode${q.held ? ` (${q.held} waiting)` : ''}</button>`
+            : `<button class="btn btn-secondary btn-sm" data-action="quiet-open">${icon('moon')}Quiet mode</button>`}
+        </div>
+      </section>`;
+  }
+
+  function viewDeadlines() {
+    const key = (d) => `${d.dueDate} ${d.dueTime || '99:99'}`;
+    const all = [...state.deadlines].sort((a, b) => key(a).localeCompare(key(b)) || a.id - b.id);
+    const today = localDate(), tomorrow = addDays(1), weekEnd = addDays(7);
+    const open = all.filter((d) => !d.done);
+    const done = all.filter((d) => d.done);
+    const groups = [
+      ['Overdue', open.filter((d) => d.dueDate < today), 'is-overdue'],
+      ['Today', open.filter((d) => d.dueDate === today)],
+      ['Tomorrow', open.filter((d) => d.dueDate === tomorrow)],
+      ['This week', open.filter((d) => d.dueDate > tomorrow && d.dueDate <= weekEnd)],
+      ['Later', open.filter((d) => d.dueDate > weekEnd)],
+    ].filter((g) => g[1].length);
+    const row = (d) => `
+      <div class="row dl-row ${d.done ? 'is-done' : ''}" role="listitem">
+        <button class="dl-check" role="checkbox" aria-checked="${d.done}" data-action="dl-done" data-id="${d.id}" aria-label="Mark ${esc(d.title)} ${d.done ? 'not done' : 'done'}">${d.done ? icon('check') : ''}</button>
+        <span class="bi-icon k-${d.kind}">${icon(DL_ICON[d.kind] || 'clock')}</span>
+        <div class="row-main">
+          <div class="row-title">${esc(d.title)}</div>
+          <div class="row-sub">${esc(KIND_NAME[d.kind])} · ${esc(dlWhen(d))}${d.source === 'message' ? ` · from ${esc(d.sender)}` : ''}</div>
+        </div>
+        <button class="icon-btn sm" data-action="dl-delete" data-id="${d.id}" aria-label="Remove ${esc(d.title)}">${icon('trash')}</button>
+      </div>`;
+    return `
+      <div class="page">
+        <p class="page-sub">Exams, deadlines, meetings and payments. ${esc(M.agent.name)} adds them when a message mentions one ("report due Monday", "viva on 12th"), and you can add your own.</p>
+        <form class="card dl-form" data-form="deadline">
+          <input class="input dl-title" name="title" maxlength="120" placeholder="e.g. DBMS end-sem exam" aria-label="What's due" autocomplete="off" required />
+          <select class="select" name="kind" aria-label="Type">
+            ${Object.entries(KIND_NAME).map(([k, l]) => `<option value="${k}" ${k === 'exam' ? 'selected' : ''}>${l === 'Due' ? 'Assignment' : l}</option>`).join('')}
+          </select>
+          <input class="input" type="date" name="dueDate" value="${tomorrow}" min="${today}" aria-label="Date" required />
+          <input class="input" type="time" name="dueTime" aria-label="Time (optional)" />
+          <button class="btn btn-primary" type="submit">${icon('plus')}Add</button>
+        </form>
+        ${groups.length ? groups.map(([label, list, cls]) => `
+          <section class="section dl-group ${cls || ''}">
+            <div class="section-head"><h2>${label}</h2></div>
+            <div class="list" role="list">${list.map(row).join('')}</div>
+          </section>`).join('')
+          : emptyState('tasks', 'Nothing due', `When a message mentions a deadline, ${M.agent.name} adds it here. You can also add one above.`)}
+        ${done.length ? `
+          <details class="dl-done">
+            <summary>${done.length} done</summary>
+            <div class="list" role="list">${done.slice(0, 30).map(row).join('')}</div>
+          </details>` : ''}
+      </div>`;
+  }
+
+  function quietEnd(choice) {
+    const d = new Date();
+    if (choice === 'morning') {
+      const [h, m] = state.notify.briefTime.split(':').map(Number);
+      d.setDate(d.getDate() + 1);
+      d.setHours(h, m, 0, 0);
+    } else {
+      d.setMinutes(d.getMinutes() + Number(choice));
+    }
+    return d;
+  }
+
+  function openQuiet() {
+    const q = quiet();
+    const opts = [['60', '1 hour'], ['120', '2 hours'], ['180', '3 hours'], ['morning', 'Until tomorrow morning']];
+    openSheet(`
+      <h2 class="sheet-title" id="sheet-title">Quiet mode</h2>
+      <p class="sheet-sub">For study time. ${esc(M.agent.name)} keeps drafting, but only urgent messages and the people below can notify you. You get one summary when it ends.</p>
+      <div class="more-grid quiet-opts">
+        ${opts.map(([v, l]) => `
+          <button class="more-tile pressable" data-action="quiet-start" data-until="${v}">
+            <span class="more-icon">${icon('moon')}</span><span class="more-label">${l}</span>
+            <span class="more-sub">until ${esc(quietEnd(v).toLocaleString([], { weekday: v === 'morning' ? 'short' : undefined, hour: 'numeric', minute: '2-digit' }))}</span>
+          </button>`).join('')}
+      </div>
+      <form class="quiet-allow" data-form="quiet-allow">
+        <label class="field-label" for="quiet-allow">Always let these people through (comma-separated)</label>
+        <div class="rule-add">
+          <input id="quiet-allow" class="input" maxlength="300" value="${esc(q.allow.join(', '))}" placeholder="e.g. Mom, Professor" autocomplete="off" />
+          <button class="btn btn-secondary btn-sm" type="submit">Save</button>
+        </div>
+        <p class="sheet-sub">Messages with words like "urgent", "asap" or "emergency" always come through.</p>
+      </form>`);
+  }
+
+  async function setQuiet(body, msg) {
+    try {
+      const q = await api('/api/quiet', { method: 'PUT', body });
+      if (state.brief) state.brief.quiet = q;
+      state.wasQuiet = q.active;
+      renderAll();
+      if (msg) toast(typeof msg === 'function' ? msg(q) : msg);
+      loadLive();
+      return q;
+    } catch (e) { toast(`Couldn't change quiet mode: ${e.message}`); return null; }
+  }
+
+  // Notifications: shown while Aide is open (a tab or the installed app). Settings are per device.
+  const NOTIFY_DEFAULTS = { on: false, drafts: true, deadlines: true, brief: true, briefTime: '08:00' };
+  state.notify = { ...NOTIFY_DEFAULTS, ...store.get('notify', {}) };
+  const saveNotify = () => store.set('notify', state.notify);
+  const canNotify = () => 'Notification' in window && Notification.permission === 'granted' && state.notify.on;
+
+  // force: show a system notification even while you're looking at Aide (the test button).
+  function notify(title, body, { tag, view = 'home', important = false, force = false } = {}) {
+    if (!canNotify()) return;
+    if (quiet().active && !important) return; // quiet mode: only urgent things get through
+    if (!force && document.visibilityState === 'visible' && document.hasFocus()) { toast(`${title}: ${body}`); return; }
+    const opts = { body, tag, icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', data: { view }, renotify: !!tag };
+    const fallback = () => { const n = new Notification(title, opts); n.onclick = () => { window.focus(); go(view); n.close(); }; };
+    if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+      navigator.serviceWorker.ready.then((r) => r.showNotification(title, opts)).catch(fallback);
+    } else fallback();
+  }
+
+  // New drafts since the last refresh (called from loadLive).
+  function notifyNewDrafts(pending) {
+    const ids = new Set(pending.map((p) => String(p.id)));
+    if (state.seenPending) {
+      const fresh = pending.filter((p) => !state.seenPending.has(String(p.id)));
+      const urgent = fresh.filter((p) => p.urgent);
+      const normal = fresh.filter((p) => !p.urgent);
+      urgent.forEach((p) => notify(`Urgent: ${p.from}`, p.original.slice(0, 140), { tag: `a${p.id}`, view: 'approvals', important: true }));
+      if (normal.length && state.notify.drafts) {
+        notify(normal.length === 1 ? `Reply ready for ${normal[0].from}` : `${normal.length} replies ready`,
+          normal.length === 1 ? normal[0].draft.slice(0, 140) : normal.map((p) => p.from).join(', '), { tag: 'drafts', view: 'approvals' });
+      }
+    }
+    state.seenPending = ids;
+  }
+
+  // Runs every 30s: morning brief, deadlines within the hour, end of quiet mode.
+  function scheduleTick() {
+    if (!state.live || !state.brief) return;
+    const now = new Date();
+    const today = localDate(now);
+    const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const b = state.brief;
+    if (state.notify.brief && hhmm >= state.notify.briefTime && store.get('briefNotified') !== today) {
+      store.set('briefNotified', today);
+      const due = [...b.today, ...b.tomorrow.filter((d) => d.kind === 'exam')].map((d) => d.title);
+      notify(`Good ${partOfDay()}, ${M.user.name}`, `${b.headline}${due.length ? ` · ${due.slice(0, 3).join(', ')}` : ''}`, { tag: 'brief', view: 'home' });
+    }
+    if (state.notify.deadlines) {
+      const sent = new Set(store.get('dlNotified', []));
+      b.today.filter((d) => d.dueTime).forEach((d) => {
+        const mins = Math.round((new Date(`${d.dueDate}T${d.dueTime}`) - now) / 60000);
+        const key = `${d.id}@${d.dueDate}`;
+        if (mins > 0 && mins <= 60 && !sent.has(key)) {
+          sent.add(key);
+          notify(`${KIND_NAME[d.kind]} in ${mins} min`, d.title, { tag: `d${d.id}`, view: 'tasks', important: d.kind === 'exam' });
+        }
+      });
+      store.set('dlNotified', [...sent].slice(-200));
+    }
+    const q = b.quiet;
+    if (state.wasQuiet && !q.active) {
+      notify('Quiet mode is over', b.pending ? `${b.pending} ${b.pending === 1 ? 'reply is' : 'replies are'} waiting for you` : 'Nothing is waiting for you.', { tag: 'quiet', view: 'approvals', important: true });
+    }
+    state.wasQuiet = q.active;
+  }
+  setInterval(scheduleTick, 30000);
+
+  function notificationsSection() {
+    const n = state.notify;
+    const supported = 'Notification' in window;
+    const perm = supported ? Notification.permission : 'unsupported';
+    const sw = (key, label, sub) => `
+      <div class="row">
+        <div class="row-main"><div class="row-title" id="np-${key}">${label}</div><div class="row-sub">${sub}</div></div>
+        <button class="switch" role="switch" aria-checked="${n[key]}" aria-labelledby="np-${key}" data-action="notif-pref" data-key="${key}" ${n.on ? '' : 'disabled'}></button>
+      </div>`;
+    const q = quiet();
+    return `
+      <section class="section" aria-labelledby="s-alerts">
+        <div class="section-head"><h2 id="s-alerts">Notifications</h2><p>Alerts while ${esc(M.agent.name)} is open, in a tab or installed as an app. Saved on this device.</p></div>
+        <div class="card notif-status">
+          ${!supported ? `<span>${icon('info')}This browser can't show notifications.</span>`
+            : perm === 'denied' ? `<span>${icon('alert')}Notifications are blocked for this site. Allow them in your browser's site settings, then come back.</span>`
+            : n.on && perm === 'granted' ? `<span class="ok">${icon('check')}Notifications are on.</span><span class="spacer"></span><button class="btn btn-ghost btn-sm" data-action="notif-test">Send a test</button><button class="btn btn-ghost btn-sm" data-action="notif-off">Turn off</button>`
+            : `<span>${icon('info')}Get alerts for new replies, deadlines and your morning brief.</span><span class="spacer"></span><button class="btn btn-primary btn-sm" data-action="notif-enable">Turn on notifications</button>`}
+        </div>
+        <div class="list">
+          ${sw('drafts', 'New replies to review', 'When a draft is ready. Urgent ones always come through.')}
+          ${sw('deadlines', 'Deadline reminders', 'An hour before anything with a time, like an exam or meeting.')}
+          ${sw('brief', 'Morning brief', 'What needs you and what\'s due, once a day.')}
+          <div class="row">
+            <div class="row-main"><div class="row-title"><label for="brief-time">Brief time</label></div><div class="row-sub">Also when "Until tomorrow morning" quiet mode ends.</div></div>
+            <input class="input brief-time" type="time" id="brief-time" value="${n.briefTime}" />
+          </div>
+        </div>
+      </section>
+      <section class="section" aria-labelledby="s-quiet">
+        <div class="section-head"><h2 id="s-quiet">Quiet mode</h2><p>For study time: drafts keep coming, alerts stay silent except urgent ones and the people you choose.</p></div>
+        <div class="card notif-status">
+          ${q.active
+            ? `<span class="ok">${icon('moon')}On until ${esc(fmtClock(q.until))}${q.held ? `, ${q.held} waiting` : ''}.</span><span class="spacer"></span><button class="btn btn-secondary btn-sm" data-action="quiet-off">End now</button>`
+            : `<span>${icon('moon')}Off.${q.allow.length ? ` Always allowed: ${esc(q.allow.join(', '))}.` : ''}</span><span class="spacer"></span><button class="btn btn-primary btn-sm" data-action="quiet-open">Start quiet mode</button>`}
+        </div>
+      </section>`;
+  }
+
   // ===== View: Food =========================================================
   // Plan and check the cart here; Claude places it with the official Swiggy/Zomato connector
   // (they don't allow third-party apps yet), after showing you the real cart and getting your yes.
@@ -1254,6 +1523,7 @@
   function settingsLiveSections() {
     const p = state.profile;
     if (!p) return '';
+    const alerts = state.brief ? notificationsSection() : '';
     const confirm = (k) => p.needsConfirming.includes(k) ? '<span class="pill s-flagged">Please confirm</span>' : '';
     const learned = state.learned || [];
     return `
@@ -1289,7 +1559,8 @@
                 <button class="icon-btn sm" data-action="forget-learned" data-id="${l.id}" aria-label="Forget this example" title="Forget this example">${icon('trash')}</button>
               </div>`).join('')}
           </div>` : `<div class="card learned-empty">${icon('sparkle')}<span>Nothing yet. Edit a draft before you approve it and ${esc(M.agent.name)} will start learning your style.</span></div>`}
-      </section>`;
+      </section>
+      ${alerts}`;
   }
 
   function viewSettings() {
@@ -1324,7 +1595,7 @@
           </div>
         </section>
 
-        <section class="section" aria-labelledby="s-notif">
+        <section class="section" aria-labelledby="s-notif" ${state.brief ? 'hidden' : ''}>
           <div class="section-head"><h2 id="s-notif">Notifications</h2><p>What's worth interrupting you for.</p></div>
           <div class="list">
             ${s.notifications.map((n) => `
@@ -1438,6 +1709,7 @@
     $('#content').scrollTop = 0;
     if (state.live && ['activity', 'rules', 'settings'].includes(view)) loadExtras();
     if (state.live && view === 'food') loadFood();
+    if (state.live && view === 'tasks') loadDeadlines();
   }
 
   // ===== Sheets (More menu, quick capture) ==================================
@@ -1755,6 +2027,58 @@
       toast('Task removed', { action: 'Undo', onAction: () => { state.tasks.splice(idx, 0, removed); renderView(); } });
     },
 
+    // ----- quiet mode, notifications, deadlines ----------------------------------
+    'quiet-open': () => openQuiet(),
+    'quiet-start': (el) => {
+      const allow = $('#quiet-allow');
+      const body = { until: quietEnd(el.dataset.until).toISOString() };
+      if (allow) body.allow = allow.value.split(',').map((x) => x.trim()).filter(Boolean);
+      closeSheet();
+      setQuiet(body, (q) => `Quiet mode on until ${fmtClock(q.until)}. Only urgent messages${q.allow.length ? ` and ${q.allow.join(', ')}` : ''} will alert you.`);
+    },
+    'quiet-off': () => {
+      const held = quiet().held; // read before it resets
+      setQuiet({ until: null }, held
+        ? `Quiet mode off. ${held} ${held === 1 ? 'reply is' : 'replies are'} waiting for you.`
+        : 'Quiet mode off. Nothing new while you were away.');
+    },
+    'notif-enable': async () => {
+      if (!('Notification' in window)) return;
+      const perm = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
+      state.notify.on = perm === 'granted';
+      saveNotify();
+      renderView();
+      toast(state.notify.on ? 'Notifications on' : "Notifications weren't allowed");
+    },
+    'notif-off': () => { state.notify.on = false; saveNotify(); renderView(); toast('Notifications off'); },
+    'notif-test': () => notify('Aide test', 'Notifications are working.', { tag: 'test', important: true, force: true }),
+    'notif-pref': (el) => {
+      if (!state.notify.on) return;
+      state.notify[el.dataset.key] = !state.notify[el.dataset.key];
+      saveNotify();
+      el.setAttribute('aria-checked', state.notify[el.dataset.key]);
+    },
+    'dl-done': async (el) => {
+      const d = (state.deadlines || []).find((x) => String(x.id) === el.dataset.id);
+      if (!d) return;
+      try {
+        const saved = await api(`/api/deadlines/${d.id}`, { method: 'PATCH', body: { done: !d.done } });
+        Object.assign(d, saved);
+        renderView();
+        if (saved.done) toast(`Done: ${saved.title}`, { action: 'Undo', onAction: () => ACTIONS['dl-done']({ dataset: { id: String(d.id) } }) });
+        loadLive();
+      } catch (e) { toast(`Couldn't update it: ${e.message}`); }
+    },
+    'dl-delete': async (el) => {
+      try {
+        await api(`/api/deadlines/${el.dataset.id}`, { method: 'DELETE' });
+        state.deadlines = state.deadlines.filter((x) => String(x.id) !== el.dataset.id);
+        renderView();
+        toast('Removed');
+        loadLive();
+      } catch (e) { toast(`Couldn't remove it: ${e.message}`); }
+    },
+
     // ----- food ---------------------------------------------------------------
     'food-app': (el) => {
       state.food.app = el.dataset.app;
@@ -1895,6 +2219,20 @@
       toast('Task added');
     }
 
+    if (kind === 'deadline') {
+      const el = form.elements;
+      const body = { title: el.title.value.trim(), kind: el.kind.value, dueDate: el.dueDate.value, dueTime: el.dueTime.value || null };
+      if (!body.title || !body.dueDate) return;
+      api('/api/deadlines', { method: 'POST', body })
+        .then((d) => { state.deadlines = [...(state.deadlines || []), d]; renderView(); toast(`Added: ${d.title} (${dlWhen(d)})`); loadLive(); const t = $('.dl-title'); if (t) t.focus(); })
+        .catch((err) => toast(`Couldn't add it: ${err.message}`));
+    }
+
+    if (kind === 'quiet-allow') {
+      const allow = $('#quiet-allow').value.split(',').map((x) => x.trim()).filter(Boolean);
+      setQuiet({ allow }, (q) => (q.allow.length ? `Always allowed: ${q.allow.join(', ')}` : 'Allow list cleared'));
+    }
+
     if (kind === 'food-plan') {
       const input = $('#food-text');
       const text = input.value.trim();
@@ -1971,6 +2309,12 @@
   // Food cart fields save when you leave them (change fires on blur / Enter).
   document.addEventListener('change', (e) => {
     const t = e.target;
+    if (t.id === 'brief-time' && /^\d{2}:\d{2}$/.test(t.value)) {
+      state.notify.briefTime = t.value;
+      saveNotify();
+      toast(`Morning brief at ${fmt12(t.value)}`);
+      return;
+    }
     if (!t.dataset || !t.dataset.food) return;
     const o = orderById(t.dataset.order);
     if (!o || o.status !== 'planned') return;
@@ -2108,8 +2452,14 @@
   // Load pending approvals + stats from the backend. Falls back to mock data if unreachable.
   async function loadLive({ render = true } = {}) {
     try {
-      const [pending, stats] = await Promise.all([api('/api/approvals?status=pending', { timeout: 4000 }), api('/api/stats', { timeout: 4000 })]);
+      const [pending, stats, brief] = await Promise.all([
+        api('/api/approvals?status=pending', { timeout: 4000 }), api('/api/stats', { timeout: 4000 }), api('/api/brief', { timeout: 4000 }),
+      ]);
       const wasLive = state.live;
+      const briefChanged = JSON.stringify(brief) !== JSON.stringify(state.brief);
+      if (!state.brief) state.wasQuiet = brief.quiet.active;
+      state.brief = brief;
+      notifyNewDrafts(pending);
       const local = new Map(state.approvals.map((a) => [a.id, a]));
       const focused = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.input === 'draft' ? document.activeElement.dataset.id : null;
       const next = pending.map((p) => {
@@ -2126,10 +2476,11 @@
       state.approvals = next;
       state.stats = stats;
       state.live = true;
-      if (!wasLive) { loadExtras(); loadFood(); }
+      if (!wasLive) { loadExtras(); loadFood(); loadDeadlines(); }
       const wasOffline = state.offline;
       state.offline = false;
-      if (render && (changed || statsChanged || wasOffline) && !focused) renderAll();
+      if (render && (changed || statsChanged || wasOffline || (briefChanged && ['home', 'settings'].includes(state.view))) && !focused && !sheet.open) renderAll();
+      scheduleTick();
     } catch (e) {
       if (!state.live) {
         state.offline = true;
@@ -2205,5 +2556,7 @@
   // Offline support + installability. Service workers need http(s), so skip on file://.
   if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+    // Clicking a notification focuses Aide and opens the right screen.
+    navigator.serviceWorker.addEventListener('message', (e) => { if (e.data && e.data.type === 'go' && VIEW_FNS[e.data.view]) go(e.data.view); });
   }
 })();

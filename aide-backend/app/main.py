@@ -6,9 +6,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import threading
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query
@@ -19,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .classifier import guess_group
 from .config import BUCKET_LABELS, CHANNELS, MINUTES_PER_REPLY, Settings, load_json, load_profile, load_rules, save_json
 from .db import DB, iso, local_day, parse_iso, streak, utcnow
+from . import deadlines as deadlines_mod
 from . import food
 from . import gmail as gmail_mod
 from .drafter import get_drafter
@@ -60,6 +62,31 @@ class RulesIn(BaseModel):
     auto: list[str] = Field(default_factory=list, max_length=30)
     ask: list[str] = Field(default_factory=list, max_length=30)
     never: list[str] = Field(default_factory=list, max_length=30)
+
+
+class QuietIn(BaseModel):
+    until: datetime | None = None          # null turns quiet mode off
+    allow: list[str] | None = Field(default=None, max_length=20)
+
+
+HHMM = r"^([01]\d|2[0-3]):[0-5]\d$"
+
+
+class DeadlineIn(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    title: str = Field(min_length=1, max_length=120)
+    kind: Literal["exam", "assignment", "meeting", "payment", "other"] = "other"
+    due_date: date = Field(alias="dueDate")
+    due_time: str | None = Field(default=None, alias="dueTime", pattern=HHMM)
+
+
+class DeadlinePatch(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    title: str | None = Field(default=None, min_length=1, max_length=120)
+    kind: Literal["exam", "assignment", "meeting", "payment", "other"] | None = None
+    due_date: date | None = Field(default=None, alias="dueDate")
+    due_time: str | None = Field(default=None, alias="dueTime", pattern=HHMM)
+    done: bool | None = None
 
 
 FoodApp = Literal["swiggy", "zomato"]
@@ -127,8 +154,18 @@ def _clean_rules(items: list[str]) -> list[str]:
     return out
 
 
-def approval_json(r) -> dict:
+URGENT = re.compile(r"\b(urgent|asap|emergency|immediately|right now|hospital|accident|call me)\b", re.I)
+
+
+def is_urgent(sender: str, text: str, allow: list[str] | tuple = ()) -> bool:
+    """Urgent words, or a sender on your quiet-mode allow list (e.g. 'Mom', 'Professor')."""
+    s = sender.casefold()
+    return bool(URGENT.search(text)) or any(a.strip() and a.strip().casefold() in s for a in allow)
+
+
+def approval_json(r, allow: list[str] | tuple = ()) -> dict:
     return {
+        "urgent": is_urgent(r["sender"], r["original"], allow),
         "id": r["id"],
         "messageId": r["message_id"],
         "channel": r["channel"],
@@ -174,7 +211,27 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
         aid = db.add_approval(message_id=msg_id, channel=channel, sender=sender, original=text, draft=d.draft,
                               tone="default", bucket=d.bucket, reason=d.reason, confidence=d.confidence)
         log.info("New %s message from %s -> approval %s [%s]", channel, sender, aid, d.bucket)
+        if d.bucket != "never":  # don't track dates from spam
+            for dl in deadlines_mod.extract(text):
+                if db.add_deadline(**dl, source="message", message_id=msg_id, sender=sender, channel=channel):
+                    log.info("Found a deadline in approval %s: %s on %s", aid, dl["kind"], dl["due_date"])
         return aid
+
+    # ----- quiet mode --------------------------------------------------------
+    def quiet_state() -> dict:
+        q = db.get_setting("quiet", {}) or {}
+        until = q.get("until")
+        active = bool(until) and parse_iso(until) > utcnow()
+        allow = q.get("allow", [])
+        held = 0
+        if active and q.get("started"):
+            held = sum(1 for r in db.approvals_since(q["started"])
+                       if r["status"] == "pending" and not is_urgent(r["sender"], r["original"], allow))
+        return {"active": active, "until": until if active else None, "started": q.get("started") if active else None,
+                "allow": allow, "held": held}
+
+    def aj(r) -> dict:
+        return approval_json(r, (db.get_setting("quiet", {}) or {}).get("allow", []))
 
     poll_lock = threading.Lock()  # one inbox check at a time, so an email is never queued twice
 
@@ -281,22 +338,22 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
         if channel not in CHANNELS:
             raise HTTPException(422, f"Unknown channel '{body.channel}'. Use one of: {', '.join(CHANNELS)}")
         aid = ingest(channel, body.sender.strip(), body.text.strip())
-        return approval_json(db.get_approval(aid))
+        return aj(db.get_approval(aid))
 
     @app.get("/api/approvals")
     def list_approvals(status: Status | None = Query(default=None)):
-        return [approval_json(r) for r in db.list_approvals(status)]
+        return [aj(r) for r in db.list_approvals(status)]
 
     @app.get("/api/approvals/{approval_id}")
     def get_approval(approval_id: int):
-        return approval_json(get_or_404(approval_id))
+        return aj(get_or_404(approval_id))
 
     @app.patch("/api/approvals/{approval_id}")
     def edit_approval(approval_id: int, body: EditIn):
         r = get_or_404(approval_id)
         if not db.update_approval(approval_id, where_status=("pending",), draft=body.draft):
             conflict(r, "edit")
-        return approval_json(db.get_approval(approval_id))
+        return aj(db.get_approval(approval_id))
 
     @app.post("/api/approvals/{approval_id}/reject")
     def reject(approval_id: int):
@@ -304,7 +361,7 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
         if not db.update_approval(approval_id, where_status=("pending",), status="rejected", send_at=None):
             conflict(r, "reject")
         db.bump_stat("rejected")
-        return approval_json(db.get_approval(approval_id))
+        return aj(db.get_approval(approval_id))
 
     @app.post("/api/approvals/{approval_id}/regenerate")
     def regenerate(approval_id: int, body: RegenerateIn):
@@ -316,7 +373,7 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
         if not db.update_approval(approval_id, where_status=("pending",), draft=d.draft, ai_draft=d.draft,
                                   tone=body.tone, confidence=d.confidence, bucket=d.bucket, reason=d.reason):
             conflict(db.get_approval(approval_id), "regenerate")
-        return approval_json(db.get_approval(approval_id))
+        return aj(db.get_approval(approval_id))
 
     @app.post("/api/approvals/{approval_id}/approve")
     def approve(approval_id: int, body: ApproveIn | None = None):
@@ -326,7 +383,7 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
             fields["draft"] = body.draft
         if not db.update_approval(approval_id, where_status=("pending",), **fields):
             conflict(r, "approve")
-        return approval_json(db.get_approval(approval_id))
+        return aj(db.get_approval(approval_id))
 
     @app.post("/api/approvals/{approval_id}/undo")
     def undo(approval_id: int):
@@ -342,7 +399,7 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
             db.conn.commit()
         if cur.rowcount != 1:
             raise HTTPException(409, "The undo window has closed")
-        return approval_json(db.get_approval(approval_id))
+        return aj(db.get_approval(approval_id))
 
     @app.get("/api/stats")
     def stats():
@@ -421,6 +478,106 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
     @app.get("/api/rules")
     def get_rules():
         return rules_json(load_rules())
+
+    # ----- quiet mode, deadlines, daily brief ------------------------------------
+    @app.get("/api/quiet")
+    def get_quiet():
+        return quiet_state()
+
+    @app.put("/api/quiet")
+    def put_quiet(body: QuietIn):
+        """Turn quiet mode on (until a time) or off (until = null), and/or set who can still reach you."""
+        q = db.get_setting("quiet", {}) or {}
+        if "until" in body.model_fields_set:
+            if body.until is None:
+                q.update(until=None, started=None)
+            else:
+                until = body.until if body.until.tzinfo else body.until.astimezone()
+                if until <= utcnow():
+                    raise HTTPException(422, "Quiet mode has to end in the future")
+                if not quiet_state()["active"]:
+                    q["started"] = iso(utcnow())
+                q["until"] = iso(until)
+        if body.allow is not None:
+            q["allow"] = _clean_rules(body.allow)[:20]
+        db.set_setting("quiet", q)
+        return quiet_state()
+
+    def deadline_json(r) -> dict:
+        return {"id": r["id"], "title": r["title"], "kind": r["kind"],
+                "kindLabel": deadlines_mod.KIND_LABEL.get(r["kind"], "Task"), "dueDate": r["due_date"],
+                "dueTime": r["due_time"], "source": r["source"], "sender": r["sender"], "channel": r["channel"],
+                "done": bool(r["done"])}
+
+    @app.get("/api/deadlines")
+    def list_deadlines(include_done: bool = False):
+        return [deadline_json(r) for r in db.list_deadlines(include_done)]
+
+    @app.post("/api/deadlines", status_code=201)
+    def add_deadline(body: DeadlineIn):
+        did = db.add_deadline(title=" ".join(body.title.split()), kind=body.kind, due_date=body.due_date.isoformat(),
+                              due_time=body.due_time)
+        return deadline_json(db.get_deadline(did))
+
+    @app.patch("/api/deadlines/{deadline_id}")
+    def edit_deadline(deadline_id: int, body: DeadlinePatch):
+        if not db.get_deadline(deadline_id):
+            raise HTTPException(404, "Not found")
+        fields = {}
+        for k in body.model_fields_set:
+            v = getattr(body, k)
+            if v is None and k != "due_time":  # only the time can be cleared
+                continue
+            fields[k] = int(v) if k == "done" else (v.isoformat() if isinstance(v, date) else v)
+        if "title" in fields:
+            fields["title"] = " ".join(fields["title"].split())
+        if fields:
+            db.update_deadline(deadline_id, **fields)
+        return deadline_json(db.get_deadline(deadline_id))
+
+    @app.delete("/api/deadlines/{deadline_id}", status_code=204)
+    def delete_deadline(deadline_id: int):
+        if not db.delete_deadline(deadline_id):
+            raise HTTPException(404, "Not found")
+
+    @app.get("/api/brief")
+    def brief():
+        """Today at a glance: what needs you, what's due, and anything left open."""
+        today = datetime.now().date()
+        tomorrow, week_end = today + timedelta(days=1), today + timedelta(days=7)
+        dls = [deadline_json(r) for r in db.list_deadlines()]
+        when = lambda d: date.fromisoformat(d["dueDate"])  # noqa: E731
+        overdue = [d for d in dls if when(d) < today]
+        due_today = [d for d in dls if when(d) == today]
+        due_tomorrow = [d for d in dls if when(d) == tomorrow]
+        this_week = [d for d in dls if tomorrow < when(d) <= week_end]
+        quiet = quiet_state()
+        pending = db.list_approvals("pending")
+        urgent = [r for r in pending if is_urgent(r["sender"], r["original"], quiet["allow"])]
+        food_open = sum(1 for o in db.list_food_orders() if o["status"] in ("planned", "approved"))
+
+        parts = []
+        if pending:
+            parts.append(f"{len(pending)} {'reply needs' if len(pending) == 1 else 'replies need'} you")
+        if overdue:
+            parts.append(f"{len(overdue)} overdue")
+        if due_today:
+            parts.append(f"{len(due_today)} due today")
+        exams_soon = [d for d in due_tomorrow if d["kind"] == "exam"]
+        if exams_soon:
+            parts.append("exam tomorrow")
+        elif due_tomorrow:
+            parts.append(f"{len(due_tomorrow)} due tomorrow")
+        return {
+            "date": today.isoformat(),
+            "headline": " · ".join(parts) if parts else "Nothing needs you right now.",
+            "pending": len(pending),
+            "urgent": [aj(r) for r in urgent][:3],
+            "overdue": overdue, "today": due_today, "tomorrow": due_tomorrow, "thisWeek": this_week,
+            "foodOpen": food_open,
+            "handledYesterday": db.handled_by_day().get((today - timedelta(days=1)).isoformat(), 0),
+            "quiet": quiet,
+        }
 
     # ----- food (planned in Aide, placed by Claude with the official connector) ----
     def food_json(o: dict, prefs: dict | None = None) -> dict:

@@ -3,6 +3,9 @@
 A personal assistant that drafts replies to your messages in your own voice and waits for your OK before sending anything.
 
 - **`aide-ui/`**: the app (Home, Approvals, Chat, Activity, Apps…). Plain HTML/CSS/JS, installable on your phone. See [aide-ui/README.md](aide-ui/README.md).
+- **Today, deadlines and quiet mode:** a daily brief on Home, exams and deadlines picked up from
+  your messages (Tasks), notifications, and a quiet mode for study time that only lets urgent
+  messages through.
 - **Food:** plan a Swiggy or Zomato cart in Aide, check it against your diet, budget and
   never-include list, approve it, and Claude places it with the official connector after showing
   you the real cart and getting your "yes, place it".
