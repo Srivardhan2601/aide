@@ -32,6 +32,9 @@ class Settings:
     # Gmail: off unless AIDE_GMAIL=on (and you've run gmail_auth.py). See GMAIL_SETUP.md.
     gmail: bool = False
     gmail_poll_seconds: float = 60.0
+    # Phone access on home Wi-Fi: off unless AIDE_LAN=on (start-phone.cmd). See app/phone.py.
+    lan: bool = False
+    port: int = 8000
     cors_origins: list[str] = field(default_factory=lambda: [
         "http://localhost:8000", "http://127.0.0.1:8000",
         "http://localhost:5173", "http://127.0.0.1:5173",
@@ -47,6 +50,8 @@ class Settings:
             fallbacks=os.environ.get("AIDE_FALLBACKS", "default"),
             gmail=os.environ.get("AIDE_GMAIL", "off").lower() in ("on", "1", "true", "yes"),
             gmail_poll_seconds=float(os.environ.get("AIDE_GMAIL_POLL_SECONDS", "60")),
+            lan=os.environ.get("AIDE_LAN", "off").lower() in ("on", "1", "true", "yes"),
+            port=int(os.environ.get("AIDE_PORT", "8000")),
         )
 
 

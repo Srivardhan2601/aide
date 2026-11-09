@@ -127,6 +127,29 @@ Tests (no API key needed): `python -m pytest`
 | PATCH / DELETE | `/api/deadlines/{id}` | `{done?, title?, dueDate?, dueTime?}` | |
 | GET / PUT | `/api/quiet` | `{until: ISO or null, allow?: [names]}` | `held` = non-urgent replies waiting |
 
+## Use it on your phone (home Wi-Fi)
+
+Start Aide with **`start-phone.cmd`** (or `start.ps1 -Phone`). If Windows asks about the
+firewall, allow **Private networks** only. Then on the computer open **Settings → Use on your
+phone**, scan the QR code with your phone (same Wi-Fi) and type the 6-digit PIN.
+
+How it's protected (`app/phone.py`):
+- The computer running Aide always has full access. The PIN and the list of paired phones are
+  shown only there, never to a phone.
+- Other devices can load the app's screens but get **no data** from `/api/*` until paired.
+- The PIN is one-time (it changes after each pairing). 5 wrong PINs lock pairing for 10 minutes.
+- Each phone gets its own pass (an HttpOnly cookie, 90 days). Only a hash is stored, and you can
+  remove a phone from Settings at any time.
+- It's plain HTTP on your own network: use trusted home Wi-Fi, never public Wi-Fi. Because of
+  that, a phone can't install Aide as an app or get notifications (browsers need HTTPS for those).
+
+## Conversation memory and weekly recap
+
+- When drafting, Claude also sees the last few messages with that person on that app (theirs,
+  and the replies you actually sent; unsent drafts don't count), so replies fit the conversation.
+- `GET /api/weekly`: replies sent (vs last week), time saved, typical reply time, how many you
+  edited or skipped, deadlines done, and who messaged most. Shown on the Activity screen.
+
 ## Food orders (Swiggy / Zomato)
 
 Swiggy and Zomato have official AI ordering connectors, but they don't allow third-party apps

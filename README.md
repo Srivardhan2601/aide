@@ -13,7 +13,7 @@ A personal assistant that drafts replies to your messages in your own voice and 
 
 ## Quick start
 
-**Double-click `start.cmd`.** The first run sets everything up, then the app opens at
+**Double-click `start.cmd`** (or `start-phone.cmd` to also use Aide from your phone on home Wi-Fi). The first run sets everything up, then the app opens at
 http://localhost:8000. Use `start-with-gmail.cmd` once Gmail is connected
 (see [aide-backend/GMAIL_SETUP.md](aide-backend/GMAIL_SETUP.md)).
 

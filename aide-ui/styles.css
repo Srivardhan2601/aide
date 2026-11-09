@@ -1109,3 +1109,31 @@ body[data-view="chat"] .toasts { bottom: 130px; } /* clear the composer */
   .dl-form .dl-title { grid-column: 1 / -1; }
   .dl-form .btn { grid-column: 1 / -1; }
 }
+
+/* ---------- Phone pairing, phone access, weekly recap ---------- */
+.pair-page { display: grid; place-items: center; min-height: 60vh; }
+.pair-card { max-width: 380px; width: 100%; text-align: center; display: grid; gap: 12px; padding: 28px 22px; }
+.pair-card h2 { margin: 0; font-size: 20px; }
+.pair-card p { margin: 0; color: var(--text-2); font-size: 14px; }
+.pair-card .muted { font-size: 12px; color: var(--muted); }
+.pair-form { display: grid; gap: 12px; margin: 6px 0; }
+.pair-pin { text-align: center; font-size: 28px; letter-spacing: .4em; font-variant-numeric: tabular-nums; min-height: 56px; }
+
+.phone-card { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 10px; }
+.phone-qr { width: 160px; height: 160px; border-radius: 12px; background: #fff; padding: 8px; flex: none; }
+.phone-steps { flex: 1; min-width: 220px; display: grid; gap: 8px; }
+.phone-steps ol { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 13px; color: var(--text-2); }
+.phone-url { user-select: all; color: var(--text); }
+.phone-pin { font-size: 34px; font-weight: 700; letter-spacing: .12em; font-variant-numeric: tabular-nums; background: var(--grad-text); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.phone-steps .btn { justify-self: start; }
+.phone-steps .muted { font-size: 12px; color: var(--muted); margin: 0; }
+
+.weekly { display: grid; gap: 14px; margin-bottom: 18px; }
+.wk-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.wk-tile { display: grid; gap: 1px; padding: 10px 12px; border-radius: 12px; background: var(--surface-2); }
+.wk-tile b { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.wk-tile span { font-size: 12px; color: var(--text-2); }
+.wk-tile small { font-size: 11px; color: var(--muted); }
+.wk-bars { height: 84px; }
+.wk-people { margin: 0; font-size: 13px; color: var(--text-2); }
+@media (max-width: 767px) { .wk-tiles { grid-template-columns: repeat(2, 1fr); } .phone-qr { margin: 0 auto; } }

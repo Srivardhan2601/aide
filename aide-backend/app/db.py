@@ -296,6 +296,38 @@ class DB:
         d["items"] = json.loads(d["items"])
         return d
 
+    # ----- weekly recap -----------------------------------------------------
+    def week_data(self, since_iso: str) -> dict:
+        """Raw numbers for the weekly recap, for everything since `since_iso` (UTC)."""
+        with self.lock:
+            reply_times = self.conn.execute(
+                """SELECT a.created_at, s.sent_at FROM sent s JOIN approvals a ON a.id = s.approval_id
+                   WHERE s.sent_at >= ?""", (since_iso,)).fetchall()
+            top = self.conn.execute(
+                """SELECT sender, channel, COUNT(*) AS n FROM messages WHERE received_at >= ?
+                   GROUP BY sender, channel ORDER BY n DESC, MAX(received_at) DESC LIMIT 3""", (since_iso,)).fetchall()
+            edited = self.conn.execute("SELECT COUNT(*) FROM learned_examples WHERE created_at >= ?", (since_iso,)).fetchone()[0]
+            received = self.conn.execute("SELECT COUNT(*) FROM messages WHERE received_at >= ?", (since_iso,)).fetchone()[0]
+            days = {r["day"]: (r["handled"], r["rejected"]) for r in self.conn.execute("SELECT * FROM daily_stats")}
+        return {"reply_times": [(r["created_at"], r["sent_at"]) for r in reply_times],
+                "top": [dict(r) for r in top], "edited": edited, "received": received, "days": days}
+
+    # ----- conversation memory ----------------------------------------------
+    def conversation(self, channel: str, sender: str, before_message_id: int | None = None, limit: int = 6) -> list[dict]:
+        """Recent back-and-forth with one person on one app, oldest first:
+        their messages and the replies you actually sent (not unsent drafts)."""
+        before = before_message_id or 2**62
+        with self.lock:
+            rows = self.conn.execute(
+                """SELECT 'them' AS who, m.text AS text, m.received_at AS at FROM messages m
+                     WHERE m.channel = ? AND m.sender = ? AND m.id < ?
+                   UNION ALL
+                   SELECT 'me', s.text, s.sent_at FROM sent s JOIN approvals a ON a.id = s.approval_id
+                     WHERE a.channel = ? AND a.sender = ? AND a.message_id < ?
+                   ORDER BY at DESC LIMIT ?""",
+                (channel, sender, before, channel, sender, before, limit)).fetchall()
+        return [dict(r) for r in reversed(rows)]
+
     # ----- deadlines --------------------------------------------------------
     def add_deadline(self, *, title: str, kind: str, due_date: str, due_time: str | None, source: str = "manual",
                      message_id: int | None = None, sender: str = "", channel: str = "") -> int | None:

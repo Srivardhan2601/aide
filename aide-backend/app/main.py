@@ -12,8 +12,9 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -21,7 +22,7 @@ from .classifier import guess_group
 from .config import BUCKET_LABELS, CHANNELS, MINUTES_PER_REPLY, Settings, load_json, load_profile, load_rules, save_json
 from .db import DB, iso, local_day, parse_iso, streak, utcnow
 from . import deadlines as deadlines_mod
-from . import food
+from . import food, phone
 from . import gmail as gmail_mod
 from .drafter import get_drafter
 from .sender import send_reply
@@ -62,6 +63,10 @@ class RulesIn(BaseModel):
     auto: list[str] = Field(default_factory=list, max_length=30)
     ask: list[str] = Field(default_factory=list, max_length=30)
     never: list[str] = Field(default_factory=list, max_length=30)
+
+
+class PairIn(BaseModel):
+    pin: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
 
 
 class QuietIn(BaseModel):
@@ -206,7 +211,8 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
     def ingest(channel: str, sender: str, text: str) -> int:
         """Store an incoming message, draft a reply and queue it. Returns the approval id."""
         msg_id = db.add_message(channel, sender, text)
-        d = drafter.draft(channel=channel, sender=sender, text=text)
+        history = db.conversation(channel, sender, before_message_id=msg_id)
+        d = drafter.draft(channel=channel, sender=sender, text=text, history=history)
         # For now every message lands in the approval queue, whatever its bucket.
         aid = db.add_approval(message_id=msg_id, channel=channel, sender=sender, original=text, draft=d.draft,
                               tone="default", bucket=d.bucket, reason=d.reason, confidence=d.confidence)
@@ -317,6 +323,69 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
         allow_headers=["*"],
     )
 
+    # ----- phone access on home Wi-Fi (only when started with AIDE_LAN=on) -----
+    pairing = phone.Pairing(db)
+    app.state.pairing = pairing
+    PUBLIC_API = {"/api/pair", "/api/pair/status"}
+
+    def is_local(request: Request) -> bool:
+        return bool(request.client) and request.client.host in phone.LOCAL_HOSTS
+
+    @app.middleware("http")
+    async def lan_guard(request: Request, call_next):
+        """Other devices on the network need a paired device pass for any /api call."""
+        path = request.url.path
+        if (settings.lan and path.startswith("/api/") and path not in PUBLIC_API
+                and not is_local(request) and not pairing.is_paired(request.cookies.get(phone.COOKIE))):
+            return JSONResponse({"detail": "pair"}, status_code=401)
+        return await call_next(request)
+
+    def local_only(request: Request) -> None:
+        """The PIN and the device list are shown only on this computer, never to a paired phone."""
+        if not is_local(request):
+            raise HTTPException(403, "Only available on the computer running Aide")
+
+    @app.get("/api/pair/status")
+    def pair_status(request: Request):
+        return {"paired": is_local(request) or pairing.is_paired(request.cookies.get(phone.COOKIE))}
+
+    @app.post("/api/pair")
+    def pair(body: PairIn, request: Request, response: Response):
+        if not settings.lan:
+            raise HTTPException(404, "Phone access is off")
+        wait = pairing.locked_for()
+        if wait:
+            raise HTTPException(429, f"Too many wrong PINs. Try again in {wait // 60 + 1} min.")
+        token = pairing.pair(body.pin, phone.device_name(request.headers.get("user-agent", "")))
+        if not token:
+            raise HTTPException(401, "That PIN didn't match. Check Settings → Use on your phone on your computer.")
+        response.set_cookie(phone.COOKIE, token, max_age=phone.COOKIE_DAYS * 86400, httponly=True, samesite="strict")
+        log.info("Paired a new device from %s.", request.client.host if request.client else "?")
+        return {"paired": True}
+
+    @app.get("/api/lan")
+    def lan_info(request: Request):
+        local_only(request)
+        urls = [f"http://{ip}:{settings.port}" for ip in phone.lan_ips()]
+        return {"enabled": settings.lan, "urls": urls, "pin": pairing.pin() if settings.lan else None,
+                "devices": [{k: d[k] for k in ("id", "name", "created")} for d in pairing.devices()]}
+
+    @app.post("/api/lan/pin")
+    def lan_new_pin(request: Request):
+        local_only(request)
+        return {"pin": pairing.new_pin()}
+
+    @app.delete("/api/lan/devices/{device_id}", status_code=204)
+    def lan_remove_device(device_id: str, request: Request):
+        local_only(request)
+        if not pairing.remove(device_id):
+            raise HTTPException(404, "Not found")
+
+    @app.get("/api/lan/qr.svg")
+    def lan_qr(request: Request, url: str = Query(max_length=200, pattern=r"^http://[\d.]+:\d+/?$")):
+        local_only(request)
+        return Response(phone.qr_svg(url), media_type="image/svg+xml", headers={"Cache-Control": "no-store"})
+
     def get_or_404(approval_id: int):
         r = db.get_approval(approval_id)
         if not r:
@@ -369,7 +438,8 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
         if r["status"] != "pending":
             conflict(r, "regenerate")
         d = drafter.draft(channel=r["channel"], sender=r["sender"], text=r["original"], tone=body.tone,
-                          previous_draft=r["draft"])
+                          previous_draft=r["draft"],
+                          history=db.conversation(r["channel"], r["sender"], before_message_id=r["message_id"]))
         if not db.update_approval(approval_id, where_status=("pending",), draft=d.draft, ai_draft=d.draft,
                                   tone=body.tone, confidence=d.confidence, bucket=d.bucket, reason=d.reason):
             conflict(db.get_approval(approval_id), "regenerate")
@@ -539,6 +609,36 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
     def delete_deadline(deadline_id: int):
         if not db.delete_deadline(deadline_id):
             raise HTTPException(404, "Not found")
+
+    @app.get("/api/weekly")
+    def weekly():
+        """The last 7 days (today included) compared with the 7 before."""
+        today = datetime.now().date()
+        start = today - timedelta(days=6)
+        since = iso(datetime.combine(start, datetime.min.time()).astimezone())
+        w = db.week_data(since)
+        week = [start + timedelta(days=i) for i in range(7)]
+        per_day = [{"date": d.isoformat(), "handled": w["days"].get(d.isoformat(), (0, 0))[0]} for d in week]
+        handled = sum(d["handled"] for d in per_day)
+        skipped = sum(w["days"].get(d.isoformat(), (0, 0))[1] for d in week)
+        prev = sum(w["days"].get((start - timedelta(days=i)).isoformat(), (0, 0))[0] for i in range(1, 8))
+        waits = [(parse_iso(s) - parse_iso(c)).total_seconds() / 60 for c, s in w["reply_times"]]
+        waits.sort()
+        median_wait = round(waits[len(waits) // 2]) if waits else None
+        busiest = max(per_day, key=lambda d: d["handled"]) if handled else None
+        done = sum(1 for r in db.list_deadlines(include_done=True)
+                   if r["done"] and start.isoformat() <= r["due_date"] <= (today + timedelta(days=7)).isoformat())
+        return {
+            "from": start.isoformat(), "to": today.isoformat(),
+            "days": per_day,
+            "handled": handled, "previousWeek": prev,
+            "received": w["received"], "skipped": skipped, "edited": w["edited"],
+            "timeSavedMinutes": handled * MINUTES_PER_REPLY,
+            "medianReplyMinutes": median_wait,
+            "busiestDay": busiest["date"] if busiest else None,
+            "topPeople": [{"name": t["sender"], "channel": t["channel"], "messages": t["n"]} for t in w["top"]],
+            "deadlinesDone": done,
+        }
 
     @app.get("/api/brief")
     def brief():

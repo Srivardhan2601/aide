@@ -48,6 +48,11 @@
         cache: 'no-store',
       });
       const data = await res.json().catch(() => null);
+      // A phone on the Wi-Fi that isn't paired yet: show the PIN screen.
+      if (res.status === 401 && data && data.detail === 'pair' && !state.needsPair) {
+        state.needsPair = true;
+        renderAll();
+      }
       if (!res.ok) {
         const err = new Error((data && data.detail && (typeof data.detail === 'string' ? data.detail : 'Invalid input')) || `HTTP ${res.status}`);
         err.status = res.status;
@@ -187,6 +192,9 @@
     brief: null, // /api/brief: what needs you today, deadlines, quiet mode
     deadlines: null, // /api/deadlines (Tasks screen)
     seenPending: null, // approval ids already seen, to spot new drafts for notifications
+    needsPair: false, // a phone on the Wi-Fi that hasn't entered the PIN yet
+    lan: null, // phone access info (only answered on the computer running Aide)
+    weekly: null, // /api/weekly (Activity screen)
     wasQuiet: false,
     // Food: carts planned and checked in Aide, then placed by Claude with the official connector.
     food: { orders: null, profile: null, app: null, busy: false, showPrefs: false },
@@ -812,6 +820,7 @@
     const opt = (val, label, cur) => `<option value="${val}" ${val === cur ? 'selected' : ''}>${label}</option>`;
     return `
       <div class="page">
+        ${weeklyCard()}
         <div class="toolbar">
           <label class="sr-only" for="f-channel">Filter by channel</label>
           <select class="select" id="f-channel" data-filter="channel">
@@ -1314,6 +1323,95 @@
       </section>`;
   }
 
+  // ===== Phone pairing, phone access, weekly recap ==========================
+  function viewPair() {
+    return `
+      <div class="page pair-page">
+        <div class="card pair-card">
+          <div class="done-badge">${icon('sparkle')}</div>
+          <h2>Pair this phone with ${esc(M.agent.name)}</h2>
+          <p>On your computer, open <b>Settings → Use on your phone</b> and type the 6-digit PIN shown there.</p>
+          <form data-form="pair" class="pair-form">
+            <input id="pair-pin" class="input pair-pin" inputmode="numeric" maxlength="6" autocomplete="one-time-code"
+              placeholder="••••••" aria-label="6-digit PIN" autofocus />
+            <button class="btn btn-primary btn-lg btn-block" type="submit">Pair</button>
+          </form>
+          <p class="muted">Works on your home Wi-Fi. This phone stays paired for 90 days, and you can remove it from your computer anytime.</p>
+        </div>
+      </div>`;
+  }
+
+  function phoneSection() {
+    const l = state.lan;
+    if (!l) return '';
+    let body;
+    if (!l.enabled) {
+      body = `<div class="card notif-status"><span>${icon('info')}Off. To use ${esc(M.agent.name)} on your phone, start it with <b>start-phone.cmd</b> instead of start.cmd, then come back here.</span></div>`;
+    } else if (!l.urls.length) {
+      body = `<div class="card notif-status"><span>${icon('alert')}This computer isn't on a network right now. Connect to your home Wi-Fi and reopen Settings.</span></div>`;
+    } else {
+      const url = l.urls[0];
+      body = `
+        <div class="card phone-card">
+          <img class="phone-qr" src="${API_BASE}/api/lan/qr.svg?url=${encodeURIComponent(url)}" alt="QR code for ${esc(url)}" width="160" height="160" />
+          <div class="phone-steps">
+            <ol>
+              <li>Connect your phone to the <b>same Wi-Fi</b> as this computer.</li>
+              <li>Scan the code with your phone's camera, or open <b class="phone-url">${esc(url)}</b>${l.urls.length > 1 ? ` (or ${l.urls.slice(1).map(esc).join(', ')})` : ''}.</li>
+              <li>Enter this PIN:</li>
+            </ol>
+            <div class="phone-pin" aria-label="Pairing PIN">${esc(l.pin.replace(/(\d{3})(\d{3})/, '$1 $2'))}</div>
+            <button class="btn btn-ghost btn-sm" data-action="lan-new-pin">${icon('undo')}New PIN</button>
+            <p class="muted">The PIN works once. It changes after each phone pairs.</p>
+          </div>
+        </div>
+        ${l.devices.length ? `
+          <div class="list">
+            ${l.devices.map((d) => `
+              <div class="row">
+                <span class="bi-icon">${icon('chat')}</span>
+                <div class="row-main"><div class="row-title">${esc(d.name)}</div><div class="row-sub">Paired ${esc(fmtWhen(d.created))}</div></div>
+                <button class="btn btn-ghost btn-sm" data-action="lan-remove" data-id="${esc(d.id)}">Remove</button>
+              </div>`).join('')}
+          </div>` : ''}`;
+    }
+    return `
+      <section class="section" aria-labelledby="s-phone">
+        <div class="section-head"><h2 id="s-phone">Use on your phone</h2>
+          <p>Open ${esc(M.agent.name)} on your phone over home Wi-Fi while this computer runs it. Use trusted Wi-Fi only, never public Wi-Fi.</p></div>
+        ${body}
+      </section>`;
+  }
+
+  function weeklyCard() {
+    const w = state.weekly;
+    if (!state.live || !w) return '';
+    const max = Math.max(1, ...w.days.map((d) => d.handled));
+    const diff = w.handled - w.previousWeek;
+    const wait = w.medianReplyMinutes == null ? '—' : w.medianReplyMinutes < 60 ? `${w.medianReplyMinutes} min` : `${Math.round(w.medianReplyMinutes / 60)} h`;
+    const tile = (value, label, sub = '') => `<div class="wk-tile"><b>${value}</b><span>${label}</span>${sub ? `<small>${sub}</small>` : ''}</div>`;
+    return `
+      <section class="card weekly" aria-labelledby="wk-h">
+        <div class="chart-head"><h3 id="wk-h">This week</h3><span class="muted">${esc(fmtDay(w.from))} – ${esc(fmtDay(w.to))}</span></div>
+        <div class="wk-tiles">
+          ${tile(w.handled, 'replies sent', w.previousWeek || w.handled ? `${diff >= 0 ? '+' : ''}${diff} vs last week` : '')}
+          ${tile(fmtMins(w.timeSavedMinutes), 'time saved')}
+          ${tile(wait, 'typical reply time', 'from draft to sent')}
+          ${tile(w.edited, 'edited by you', w.edited ? `${esc(M.agent.name)} learned from these` : '')}
+          ${tile(w.skipped, 'skipped')}
+          ${tile(w.deadlinesDone, 'deadlines done')}
+        </div>
+        <div class="bars wk-bars" role="img" aria-label="Replies sent per day: ${w.days.map((d) => d.handled).join(', ')}">
+          ${w.days.map((d, i) => `
+            <div class="bar-col" title="${d.handled} on ${esc(fmtDay(d.date))}">
+              <div class="bar ${i === 6 ? 'is-today' : ''}" style="--h:${(d.handled / max).toFixed(3)};--i:${i}"></div>
+              <span class="bar-label ${i === 6 ? 'is-today' : ''}">${i === 6 ? 'Today' : new Date(`${d.date}T00:00`).toLocaleDateString([], { weekday: 'narrow' })}</span>
+            </div>`).join('')}
+        </div>
+        ${w.topPeople.length ? `<p class="wk-people">Most messages from ${w.topPeople.map((p) => `<b>${esc(p.name)}</b> (${p.messages})`).join(', ')}.</p>` : ''}
+      </section>`;
+  }
+
   // ===== View: Food =========================================================
   // Plan and check the cart here; Claude places it with the official Swiggy/Zomato connector
   // (they don't allow third-party apps yet), after showing you the real cart and getting your yes.
@@ -1523,7 +1621,7 @@
   function settingsLiveSections() {
     const p = state.profile;
     if (!p) return '';
-    const alerts = state.brief ? notificationsSection() : '';
+    const alerts = (state.brief ? notificationsSection() : '') + phoneSection();
     const confirm = (k) => p.needsConfirming.includes(k) ? '<span class="pill s-flagged">Please confirm</span>' : '';
     const learned = state.learned || [];
     return `
@@ -1656,7 +1754,7 @@
   function renderView() {
     const content = $('#content');
     content.classList.toggle('is-chat', state.view === 'chat');
-    content.innerHTML = VIEW_FNS[state.view]();
+    content.innerHTML = state.needsPair ? viewPair() : VIEW_FNS[state.view]();
     if (state.view === 'chat') refreshChatLog();
     if (state.animate) { playEnter(content); state.animate = false; }
     else content.classList.remove('is-entering');
@@ -2027,6 +2125,20 @@
       toast('Task removed', { action: 'Undo', onAction: () => { state.tasks.splice(idx, 0, removed); renderView(); } });
     },
 
+    // ----- phone access ----------------------------------------------------------
+    'lan-new-pin': async () => {
+      try { const r = await api('/api/lan/pin', { method: 'POST' }); state.lan.pin = r.pin; renderView(); toast('New PIN ready'); }
+      catch (e) { toast(`Couldn't make a new PIN: ${e.message}`); }
+    },
+    'lan-remove': async (el) => {
+      try {
+        await api(`/api/lan/devices/${encodeURIComponent(el.dataset.id)}`, { method: 'DELETE' });
+        state.lan.devices = state.lan.devices.filter((d) => d.id !== el.dataset.id);
+        renderView();
+        toast('Removed. That phone can no longer open Aide.');
+      } catch (e) { toast(`Couldn't remove it: ${e.message}`); }
+    },
+
     // ----- quiet mode, notifications, deadlines ----------------------------------
     'quiet-open': () => openQuiet(),
     'quiet-start': (el) => {
@@ -2217,6 +2329,14 @@
       renderView();
       $('#task-title').focus();
       toast('Task added');
+    }
+
+    if (kind === 'pair') {
+      const pin = $('#pair-pin').value.replace(/\D/g, '');
+      if (pin.length !== 6) { toast('Enter the 6-digit PIN from your computer'); return; }
+      api('/api/pair', { method: 'POST', body: { pin } })
+        .then(() => { state.needsPair = false; state.live = false; toast('Paired. Welcome to Aide on your phone!'); renderAll(); loadLive(); })
+        .catch((err) => { toast(err.message); const i = $('#pair-pin'); i.value = ''; i.focus(); });
     }
 
     if (kind === 'deadline') {
@@ -2482,6 +2602,7 @@
       if (render && (changed || statsChanged || wasOffline || (briefChanged && ['home', 'settings'].includes(state.view))) && !focused && !sheet.open) renderAll();
       scheduleTick();
     } catch (e) {
+      if (e.status === 401) return; // waiting for this phone to be paired
       if (!state.live) {
         state.offline = true;
         if (render) renderAll();
@@ -2527,6 +2648,9 @@
       state.hardRules = rules.hardRules || [];
       state.profile = profile;
       state.learned = learned;
+      // These two are optional: /api/lan answers only on the computer running Aide.
+      state.weekly = await api('/api/weekly').catch(() => null);
+      state.lan = await api('/api/lan').catch(() => null);
       if (['activity', 'rules', 'settings'].includes(state.view) && !document.activeElement.matches('input, textarea')) renderView();
     } catch (e) { /* stay on sample data for these screens */ }
   }
