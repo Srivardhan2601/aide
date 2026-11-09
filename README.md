@@ -12,6 +12,9 @@ A personal assistant that drafts replies to your messages in your own voice and 
 - **Study and more:** an exam study planner, "Later" (snooze) on drafts, search, notes about
   people that shape replies, backup/restore, optional auto-send for simple replies, and voice
   input almost everywhere.
+- **Talk to Aide:** ask out loud ("what's on today?", "when's my next exam?"), go through your
+  replies hands-free (send needs a spoken yes), and change drafts by voice. On the phone it runs
+  over a secure home link (https), so the mic works there too.
 - **`aide-backend/`**: FastAPI + SQLite server. It drafts replies with Claude using your style profile and rules, keeps the approval queue, and sends after a 5-second undo window (sending is mocked for now). See [aide-backend/README.md](aide-backend/README.md).
 
 ## Quick start

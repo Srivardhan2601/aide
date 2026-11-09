@@ -10,6 +10,7 @@ import pytest
 _tmp = Path(__file__).resolve().parent.parent / ".pytest_tmp" / "import"
 _tmp.mkdir(parents=True, exist_ok=True)
 os.environ["AIDE_DB"] = str(Path(_tmp) / "import.db")
+os.environ["AIDE_CERT_DIR"] = str(Path(_tmp) / "certs")  # never read or write the real phone certificates
 os.environ.pop("ANTHROPIC_API_KEY", None)
 
 from fastapi.testclient import TestClient  # noqa: E402

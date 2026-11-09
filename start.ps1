@@ -23,11 +23,10 @@ if (-not $env:ANTHROPIC_API_KEY) {
     Write-Host 'ANTHROPIC_API_KEY is not set, so drafts use built-in templates instead of Claude.' -ForegroundColor Yellow
 }
 
-$bind = '127.0.0.1'
 if ($Phone) {
     $env:AIDE_LAN = 'on'
-    $bind = '0.0.0.0'
-    Write-Host 'Phone access is on for your home Wi-Fi. If Windows asks about the firewall, allow "Private networks" only.' -ForegroundColor Cyan
+    Write-Host 'Phone access is on for your home Wi-Fi, over a secure (HTTPS) link on port 8443.' -ForegroundColor Cyan
+    Write-Host 'If Windows asks about the firewall, allow "Private networks" only.' -ForegroundColor Cyan
     Write-Host 'Then open Settings > Use on your phone, and scan the QR code.' -ForegroundColor Cyan
 }
 
@@ -40,4 +39,9 @@ Start-Job {
 } | Out-Null
 
 Write-Host 'Aide is running at http://localhost:8000  (press Ctrl+C to stop)' -ForegroundColor Green
-& .\.venv\Scripts\python.exe -m uvicorn app.main:app --host $bind --port 8000
+if ($Phone) {
+    # This computer: http://localhost:8000. Your phone: https://<wifi address>:8443 (see app/serve.py).
+    & .\.venv\Scripts\python.exe -m app.serve
+} else {
+    & .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+}

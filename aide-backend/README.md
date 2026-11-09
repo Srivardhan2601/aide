@@ -138,10 +138,38 @@ How it's protected (`app/phone.py`):
   shown only there, never to a phone.
 - Other devices can load the app's screens but get **no data** from `/api/*` until paired.
 - The PIN is one-time (it changes after each pairing). 5 wrong PINs lock pairing for 10 minutes.
-- Each phone gets its own pass (an HttpOnly cookie, 90 days). Only a hash is stored, and you can
-  remove a phone from Settings at any time.
-- It's plain HTTP on your own network: use trusted home Wi-Fi, never public Wi-Fi. Because of
-  that, a phone can't install Aide as an app or get notifications (browsers need HTTPS for those).
+- Each phone gets its own pass (an HttpOnly, Secure cookie, 90 days). Only a hash is stored, and
+  you can remove a phone from Settings at any time.
+- **HTTPS** (`app/certs.py`, `app/serve.py`): the phone uses `https://<wifi address>:8443`, so its
+  mic, notifications and "install as app" work. This computer keeps `http://localhost:8000`, and
+  plain HTTP is no longer reachable from the network.
+  - The certificate comes from a small "home CA" made on this computer (in `certs/`, git-ignored).
+    It is limited to private addresses (10.x, 172.16-31.x, 192.168.x) and no real domain names, so
+    even if its key leaked it couldn't be used to fake a real website.
+  - Install it on the phone once to remove the "not private" warning: Settings → Use on your
+    phone → "Seeing a not private warning?" has the download link and Android/iPhone steps.
+  - The server certificate renews itself when your Wi-Fi address changes. Delete `certs/` to
+    start over (then reinstall the new one on the phone).
+- Use trusted home Wi-Fi only, never public Wi-Fi.
+
+## Talk to Aide (voice)
+
+The mic button at the top opens **Talk to Aide**. Speak (or type) and it answers out loud from
+your own data. It's rule-based (`app/voice.py`), so it's instant, free and never makes things up.
+
+- "What's on today?", "What should I study?", "When's my next exam?", "What's due this week?",
+  "Any new messages?", "Remind me to submit the lab record Friday at 5 pm" (adds a deadline),
+  "Order 2 dosa from MTR" (plans a cart; orders are never placed by voice).
+- **Hands-free replies:** "Go through my replies" (or the button on Approvals) reads each
+  message and draft, then listens: *send* (asks "Send this to …?" and waits for *yes*), *change
+  it* / *make it shorter* / *say I'll send it tonight*, *later* / *after my exam*, *next*,
+  *ignore it*, *read it again*, *stop*. Sends still get the normal undo window.
+- **Change a draft by voice:** "Say a change" on any approval card, or
+  `POST /api/approvals/{id}/revise {instruction}`. Claude rewrites the draft; the same safety
+  checks apply. Without a key, the template drafter handles simple changes (shorter, formal,
+  warmer, "say …").
+- Settings → Voice: language, read answers aloud on/off, speaking speed. Speech recognition
+  needs Chrome, Edge or Safari; Chrome sends your audio to Google to turn it into text.
 
 ## Conversation memory and weekly recap
 

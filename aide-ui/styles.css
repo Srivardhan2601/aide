@@ -1205,3 +1205,48 @@ body[data-view="chat"] .toasts { bottom: 130px; } /* clear the composer */
 .st-add summary::-webkit-details-marker { display: none; }
 .st-add summary .ic { width: 16px; height: 16px; color: var(--accent); }
 .st-add[open] summary { margin-bottom: 12px; }
+
+/* ===== Talk to Aide ===================================================== */
+.talk { display: flex; flex-direction: column; gap: 12px; }
+.talk-log { display: flex; flex-direction: column; gap: 8px; max-height: 34vh; overflow-y: auto; }
+.talk-log:empty { display: none; }
+.talk-msg { max-width: 88%; padding: 8px 12px; border-radius: 14px; font-size: 14px; line-height: 1.45; }
+.talk-msg p { margin: 0; }
+.talk-msg .btn { margin-top: 6px; }
+.talk-msg.you { align-self: flex-end; background: var(--accent); color: var(--accent-text); border-bottom-right-radius: 4px; }
+.talk-msg.aide { align-self: flex-start; background: var(--surface-2); color: var(--text); border-bottom-left-radius: 4px; }
+.talk-controls { display: flex; justify-content: center; padding-top: 4px; }
+.talk-orb {
+  width: 72px; height: 72px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--accent); color: var(--accent-text); border: none; cursor: pointer;
+  box-shadow: 0 6px 20px rgba(79, 70, 229, 0.35); transition: transform var(--ease), background var(--ease);
+}
+.talk-orb .ic { width: 28px; height: 28px; }
+.talk-orb:hover { transform: scale(1.04); }
+.talk-orb.listening { background: #ef4444; box-shadow: 0 6px 20px rgba(239, 68, 68, 0.4); animation: mic-pulse 1.4s ease-out infinite; }
+.talk-status { text-align: center; color: var(--muted); font-size: 13px; margin: 0; min-height: 1.4em; }
+.talk-chips { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+.talk-chips[hidden] { display: none; }
+.talk-form { display: flex; gap: 8px; }
+.talk-form .input { flex: 1; min-width: 0; }
+.talk-note { display: flex; gap: 6px; align-items: center; font-size: 12px; margin: 0; }
+.talk-note .ic { width: 14px; height: 14px; flex: none; }
+.talk-card { display: flex; flex-direction: column; gap: 8px; padding: 14px; }
+.talk-card[hidden] { display: none; }
+.talk-card .who-meta { gap: 6px; }
+.talk-card .original { max-height: 120px; overflow-y: auto; }
+.talk-draft { padding: 10px 12px; border-radius: var(--radius-sm); background: var(--accent-soft); color: var(--text); font-size: 14px; line-height: 1.45; white-space: pre-wrap; }
+.talk-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.talk-btn { color: var(--accent); }
+.voice-chip .ic { width: 13px; height: 13px; }
+.voice-chip.listening { color: #fff; background: #ef4444; border-color: transparent; animation: mic-pulse 1.4s ease-out infinite; }
+.page-head-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.cert-help { font-size: 13px; text-align: left; }
+.cert-help summary { cursor: pointer; display: flex; gap: 6px; align-items: center; color: var(--text-2); font-weight: 500; }
+.cert-help summary .ic { width: 15px; height: 15px; flex: none; }
+.cert-help ol { padding-left: 20px; margin: 10px 0 6px; display: grid; gap: 6px; }
+.cert-help .phone-url { word-break: break-all; }
+@media (max-width: 480px) {
+  .talk-log { max-height: 28vh; }
+  .talk-actions .btn { flex: 1 1 auto; }
+}

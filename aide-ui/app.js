@@ -310,6 +310,7 @@
     $('#topbar').innerHTML = `
       <h1 class="page-title">${title}</h1>
       <div class="topbar-right">
+        <button class="icon-btn talk-btn" data-action="talk-open" aria-label="Talk to ${esc(M.agent.name)}" title="Talk to ${esc(M.agent.name)}">${icon('mic')}</button>
         <button class="icon-btn" data-action="search-open" aria-label="Search" title="Search">${icon('search')}</button>
         ${quiet().active ? `<button class="status quiet" data-action="quiet-open" title="Quiet mode until ${esc(fmtClock(quiet().until))}">${icon('moon')}<span class="desktop-only">Quiet</span></button>` : ''}
         <span class="status ${on ? 'on' : 'off'}" role="status"><span class="dot"></span>${on ? 'Active' : 'Paused'}</span>
@@ -592,6 +593,7 @@
       : `<footer class="approval-foot">
           ${a.bucket ? `<div class="tone-row" role="group" aria-label="Rewrite the draft">
             ${TONES.map((t) => `<button class="chip chip-sm pressable ${regen === t.key ? 'is-busy' : ''}" data-action="tone-draft" data-id="${a.id}" data-tone="${t.key}" ${regen ? 'disabled' : ''}>${esc(t.label)}</button>`).join('')}
+            ${state.live && voiceSupported() ? `<button class="chip chip-sm pressable voice-chip ${regen === 'voice' ? 'is-busy' : ''}" data-action="voice-edit" data-id="${a.id}" aria-pressed="false" title="Say how to change this draft" ${regen ? 'disabled' : ''}>${icon('mic')}Say a change</button>` : ''}
           </div>` : switchEl('auto-' + a.id, a.autoSend, 'Always auto-send this type', `data-action="autosend" data-id="${a.id}"`)}
           <div class="actions">
             ${state.live ? `<button class="btn btn-ghost" data-action="snooze-open" data-id="${a.id}" title="Remind me later">${icon('clock')}Later</button>` : ''}
@@ -659,7 +661,10 @@
         ${offlineBanner()}
         <div class="page-head">
           <p class="page-sub">${waiting ? `${waiting} ${waiting === 1 ? 'draft is' : 'drafts are'} waiting for your review. Edit any reply before sending.` : 'Sending your replies…'}</p>
-          ${pasteBtn}
+          <div class="page-head-actions">
+            ${state.live && waiting ? `<button class="btn btn-secondary btn-sm" data-action="talk-replies">${icon('mic')}Go through by voice</button>` : ''}
+            ${pasteBtn}
+          </div>
         </div>
         <p class="swipe-hint mobile-only">Swipe right to approve, left to skip.</p>
         <div class="stack" data-stagger>${state.approvals.map(approvalCard).join('')}</div>
@@ -1623,6 +1628,16 @@
                <select class="select" id="voice-lang">${VOICE_LANGS.map(([code, label]) => `<option value="${code}" ${code === v ? 'selected' : ''}>${label}</option>`).join('')}</select>`
             : `<span>${icon('info')}This browser can't do voice input. Chrome or Edge can.</span>`}
         </div>
+        <div class="list">
+          <div class="row">
+            <div class="row-main"><div class="row-title" id="vs-l">Read answers aloud</div><div class="row-sub">In Talk to ${esc(M.agent.name)} (the ${icon('mic')} button at the top).</div></div>
+            <button class="switch" role="switch" aria-checked="${speakOn()}" aria-labelledby="vs-l" data-action="voice-speak-toggle" ${speakSupported() ? '' : 'disabled'}></button>
+          </div>
+          <div class="row">
+            <div class="row-main"><div class="row-title"><label for="voice-rate">Speaking speed</label></div></div>
+            <select class="select" id="voice-rate">${[[0.85, 'Slower'], [1, 'Normal'], [1.15, 'Faster'], [1.3, 'Fast']].map(([r, l]) => `<option value="${r}" ${r === speakRate() ? 'selected' : ''}>${l}</option>`).join('')}</select>
+          </div>
+        </div>
       </section>`;
     if (!state.lan) return voice; // auto-send and backup are only on the computer running Aide
     const a = state.autosend || { enabled: false, dailyCap: 10, sentToday: 0 };
@@ -1680,8 +1695,24 @@
             <button class="btn btn-primary btn-lg btn-block" type="submit">Pair</button>
           </form>
           <p class="muted">Works on your home Wi-Fi. This phone stays paired for 90 days, and you can remove it from your computer anytime.</p>
+          ${certHelp('')}
         </div>
       </div>`;
+  }
+
+  // How to trust Aide's home certificate on a phone (removes the "not private" warning, enables the mic).
+  function certHelp(base, fingerprint) {
+    return `
+      <details class="cert-help">
+        <summary>${icon('info')}Seeing a “not private” warning? Fix it once</summary>
+        <ol>
+          <li>Download ${esc(M.agent.name)}'s home certificate on the phone: <a href="${base}/aide-home-ca.crt" download>aide-home-ca.crt</a>${base ? ` (<span class="phone-url">${esc(base)}/aide-home-ca.crt</span>)` : ''}.</li>
+          <li><b>Android:</b> Settings → search “CA certificate” → Install anyway → pick the file.</li>
+          <li><b>iPhone:</b> Settings → Profile Downloaded → Install. Then General → About → Certificate Trust Settings → turn on “Aide home CA”.</li>
+          <li>Reopen the link. The warning is gone, and the mic and notifications work.</li>
+        </ol>
+        <p class="muted">${fingerprint ? `Its fingerprint starts with <b>${esc(fingerprint)}</b>. ` : ''}It only works for addresses on your home network, so it can't be used to fake real websites.</p>
+      </details>`;
   }
 
   function phoneSection() {
@@ -1708,6 +1739,7 @@
             <p class="muted">The PIN works once. It changes after each phone pairs.</p>
           </div>
         </div>
+        <div class="card">${certHelp(url, l.caFingerprint)}</div>
         ${l.devices.length ? `
           <div class="list">
             ${l.devices.map((d) => `
@@ -1721,7 +1753,7 @@
     return `
       <section class="section" aria-labelledby="s-phone">
         <div class="section-head"><h2 id="s-phone">Use on your phone</h2>
-          <p>Open ${esc(M.agent.name)} on your phone over home Wi-Fi while this computer runs it. Use trusted Wi-Fi only, never public Wi-Fi.</p></div>
+          <p>Open ${esc(M.agent.name)} on your phone over home Wi-Fi while this computer runs it. The link is secure (https), so voice and notifications work on the phone too. Use trusted Wi-Fi only.</p></div>
         ${body}
       </section>`;
   }
@@ -2327,6 +2359,376 @@
     if (label) label.textContent = 'Listening…';
   }
 
+  // ===== Talk to Aide: voice in, voice out ==================================
+  // Talk mode answers questions from your own data (the server builds every answer).
+  // Hands-free mode reads each waiting reply and acts on what you say. Sending always asks
+  // "Send this to …?" and waits for a yes. Food is never ordered by voice.
+  const talk = { open: false, rec: null, mode: 'talk', queue: [], index: 0, loop: false, busy: false, hinted: false };
+  const speakSupported = () => 'speechSynthesis' in window;
+  const speakOn = () => store.get('voiceSpeak', true) !== false;
+  const speakRate = () => Number(store.get('voiceRate', 1)) || 1;
+  const REPLY_HINT = 'Say send, change it, later, next, or stop.';
+
+  function speak(text) {
+    return new Promise((resolve) => {
+      if (!speakOn() || !speakSupported() || !text || !talk.open) { resolve(); return; }
+      const synth = window.speechSynthesis;
+      synth.cancel();
+      const lang = voiceLang().startsWith('en') ? voiceLang() : 'en-IN'; // answers are in English
+      const voices = synth.getVoices();
+      const voiceObj = voices.find((x) => x.lang === lang) || voices.find((x) => (x.lang || '').startsWith('en'));
+      // Chrome stops long utterances part-way, so speak one sentence at a time.
+      const parts = (text.match(/[^.!?]+[.!?]*/g) || [text]).map((s) => s.trim()).filter(Boolean);
+      let i = 0;
+      const next = () => {
+        if (!talk.open || i >= parts.length) { resolve(); return; }
+        const part = parts[i++];
+        const u = new SpeechSynthesisUtterance(part);
+        u.lang = lang; u.rate = speakRate();
+        if (voiceObj) u.voice = voiceObj;
+        let done = false;
+        const finish = () => { if (!done) { done = true; clearTimeout(guard); next(); } };
+        // Some browsers never fire "end": move on after a generous guess of the speaking time.
+        const guard = setTimeout(finish, 2500 + part.length * 90 / u.rate);
+        u.onend = finish;
+        u.onerror = finish;
+        synth.speak(u);
+      };
+      next();
+    });
+  }
+
+  function talkStatus(text) { const el = $('#talk-status'); if (el) el.textContent = text; }
+
+  function talkLog(who, text, extra = '') {
+    const log = $('#talk-log');
+    if (!log) return;
+    log.insertAdjacentHTML('beforeend', `<div class="talk-msg ${who}"><p>${esc(text)}</p>${extra}</div>`);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  async function say(text, extra = '') {
+    talkLog('aide', text, extra);
+    talkStatus('Speaking…');
+    await speak(text);
+  }
+
+  function setOrb(on) {
+    const orb = $('#talk-orb');
+    if (!orb) return;
+    orb.classList.toggle('listening', on);
+    orb.setAttribute('aria-pressed', String(on));
+  }
+
+  function talkStopListening() {
+    if (talk.rec) { talk.rec.onend = null; try { talk.rec.abort(); } catch (e) { /* already stopped */ } talk.rec = null; }
+    setOrb(false);
+  }
+
+  function idleStatus() {
+    if (!voiceSupported()) return 'Type below. (Voice needs Chrome or Edge.)';
+    return talk.mode === 'talk' ? 'Tap the mic and ask' : talk.mode === 'confirm' ? 'Tap the mic and say yes or no' : 'Tap the mic to answer';
+  }
+
+  function talkListen() {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR || !talk.open) return;
+    talkStopListening();
+    if (speakSupported()) window.speechSynthesis.cancel();
+    const rec = new SR();
+    rec.lang = voiceLang();
+    rec.interimResults = true;
+    let heard = '';
+    rec.onresult = (e) => {
+      heard = [...e.results].map((r) => r[0].transcript).join('');
+      talkStatus(`“${heard}”`);
+    };
+    rec.onerror = (e) => {
+      talk.loop = false;
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        talkStatus(location.protocol === 'https:' || ['localhost', '127.0.0.1'].includes(location.hostname)
+          ? "The microphone is blocked. Allow it in your browser's site settings."
+          : 'The microphone needs the secure (https) link. See Settings → Use on your phone.');
+      } else if (e.error === 'no-speech') talkStatus("I didn't hear anything. Tap the mic to try again.");
+      else if (e.error !== 'aborted') talkStatus("Couldn't hear that. Tap the mic to try again.");
+    };
+    rec.onend = () => {
+      talk.rec = null;
+      setOrb(false);
+      if (heard.trim()) talkHandle(heard.trim());
+      else if (!talk.busy && $('#talk-status') && $('#talk-status').textContent === 'Listening…') talkStatus(idleStatus());
+    };
+    talk.rec = rec;
+    try { rec.start(); } catch (e) { talk.rec = null; return; }
+    setOrb(true);
+    talkStatus('Listening…');
+  }
+
+  async function talkHandle(text) {
+    if (talk.busy || !talk.open) return;
+    talk.busy = true;
+    talkStopListening();
+    talkLog('you', text);
+    talkStatus('Thinking…');
+    try {
+      if (talk.mode === 'talk') await talkAsk(text);
+      else await replyHandle(text);
+    } catch (e) {
+      await say(e.status ? "Sorry, that didn't work. Try again." : "I can't reach the Aide server right now.");
+    }
+    talk.busy = false;
+    renderTalkCard();
+    // In hands-free reply mode, listen again after every answer; in talk mode, only if you started with the mic.
+    if (talk.open && voiceSupported() && (talk.mode !== 'talk' || talk.loop)) talkListen();
+    else talkStatus(idleStatus());
+  }
+
+  const VIEW_NAMES = { food: 'Food', tasks: 'Tasks', study: 'Study' };
+
+  async function talkAsk(text) {
+    const r = await api('/api/voice/talk', { method: 'POST', body: { text }, timeout: 20000 });
+    const extra = r.view && VIEW_NAMES[r.view]
+      ? `<button class="btn btn-ghost btn-sm" data-action="talk-view" data-view="${r.view}">Open ${VIEW_NAMES[r.view]}</button>` : '';
+    if (r.intent === 'add') loadDeadlines();
+    if (r.intent === 'food') loadFood();
+    await say(r.say, extra);
+    if (r.end) talk.loop = false;
+    if (r.action === 'replies') await startReplies();
+  }
+
+  // ----- hands-free replies ---------------------------------------------------
+  async function startReplies() {
+    if (!state.live) { try { await loadLive({ render: false }); } catch (e) { /* offline */ } }
+    talk.queue = state.approvals.filter((a) => !state.sending[a.id]).map((a) => a.id);
+    talk.index = 0;
+    talk.hinted = false;
+    if (!talk.queue.length) { talk.mode = 'talk'; await say('No replies are waiting. You\'re all caught up.'); return; }
+    talk.mode = 'reply';
+    await readCurrent();
+  }
+
+  const currentReply = () => state.approvals.find((a) => a.id === talk.queue[talk.index]);
+
+  function shortText(t, n = 450) {
+    const s = String(t || '').replace(/\s+/g, ' ').trim();
+    return s.length > n ? `${s.slice(0, n)}… The rest is on screen.` : s;
+  }
+  // As one spoken sentence: "…tonight" -> "…tonight." but never "…tonight.."
+  const sentence = (t) => { const s = shortText(t); return /[.!?…]$/.test(s) ? s : `${s}.`; };
+
+  async function readCurrent() {
+    const a = currentReply();
+    renderTalkCard();
+    if (!a) {
+      talk.mode = 'talk';
+      talk.loop = false;
+      const left = state.approvals.filter((x) => !state.sending[x.id]).length;
+      await say(left ? `That's all for now. ${left} ${left === 1 ? 'reply is' : 'replies are'} still waiting.` : "That's all your replies. You're caught up!");
+      return;
+    }
+    const n = talk.queue.length;
+    const head = n > 1 ? `Message ${talk.index + 1} of ${n}. ` : '';
+    const channel = (M.channels[a.channel] && M.channels[a.channel].label) || a.channel;
+    talkLog('aide', `${head}${a.from} on ${channel}`);
+    talkStatus('Reading…');
+    await speak(`${head}${a.from}, on ${channel}: ${sentence(a.original)} My draft: ${sentence(a.draft)} ${talk.hinted ? 'Send, change, later, or next?' : REPLY_HINT}`);
+    talk.hinted = true;
+  }
+
+  function nextInQueue({ removed = false } = {}) {
+    if (removed) talk.queue.splice(talk.index, 1); else talk.index += 1;
+  }
+
+  async function replyHandle(text) {
+    const a = currentReply();
+    if (!a) { talk.mode = 'talk'; await talkAsk(text); return; }
+    const r = await api('/api/voice/command', { method: 'POST', body: { text } });
+    if (talk.mode === 'confirm') {
+      if (r.confirm === 'yes') { await voiceSend(a); return; }
+      if (r.confirm === 'no') { talk.mode = 'reply'; await say('Okay, not sent. Send, change, later, or next?'); return; }
+      await say(`Please say yes to send it to ${a.from}, or no.`);
+      return;
+    }
+    if (talk.mode === 'instruct') { talk.mode = 'reply'; await voiceRevise(a, text); return; }
+    switch (r.cmd) {
+      case 'send': talk.mode = 'confirm'; renderTalkCard(); await say(`Send this to ${a.from}?`); break;
+      case 'edit':
+        if (!r.instruction) { talk.mode = 'instruct'; await say('What should I change? For example: make it shorter, or say I\'ll send it tonight.'); }
+        else await voiceRevise(a, r.instruction);
+        break;
+      case 'later': await voiceLater(a, r.when); break;
+      case 'next': nextInQueue(); await readCurrent(); break;
+      case 'reject':
+        await rejectLive(a.id);
+        nextInQueue({ removed: true });
+        await say(`Dismissed. No reply to ${a.from}.`);
+        await readCurrent();
+        break;
+      case 'repeat': await readCurrent(); break;
+      case 'stop': {
+        talk.mode = 'talk';
+        talk.loop = false;
+        const left = state.approvals.filter((x) => !state.sending[x.id]).length;
+        await say(left ? `Okay, stopping. ${left} ${left === 1 ? 'reply is' : 'replies are'} still waiting.` : 'Okay, stopping.');
+        break;
+      }
+      default: await say(`Sorry, I didn't catch that. ${REPLY_HINT}`);
+    }
+  }
+
+  async function voiceSend(a) {
+    talk.mode = 'reply';
+    await approveLive(a.id); // same path as the Approve button: undo window, toast with Undo
+    if (!state.sending[a.id]) { await say("Couldn't send it. Check the screen and try again."); return; }
+    nextInQueue({ removed: true });
+    await say(`Sending to ${a.from}. You can undo it on screen for a few seconds.`);
+    await readCurrent();
+  }
+
+  async function voiceRevise(a, instruction) {
+    talkStatus('Rewriting…');
+    const before = a.draft;
+    try {
+      const res = await api(`/api/approvals/${a.id}/revise`, { method: 'POST', body: { instruction }, timeout: 60000 });
+      Object.assign(a, fromServer(res));
+    } catch (e) {
+      if (e.status === 409) { nextInQueue({ removed: true }); await say('That reply was already handled.'); await readCurrent(); return; }
+      throw e;
+    }
+    if (state.view === 'approvals') refreshCard(a.id);
+    renderTalkCard();
+    if (a.draft === before) {
+      await say('I couldn\'t make that change. Try: make it shorter, more formal, or say, followed by what to add.');
+      return;
+    }
+    await say(`New draft: ${sentence(a.draft)} Send it, change it again, or next?`);
+  }
+
+  function snoozePick(when) {
+    const opts = snoozeOptions();
+    const find = (prefix) => opts.find(([label]) => label.startsWith(prefix));
+    const pick = (when === 'exam' && find('After your exam')) || (when === 'hour' && find('In 1 hour'))
+      || (when === 'evening' && find('This evening')) || (when === 'days' && find('In 3 days')) || find('Tomorrow morning');
+    return pick;
+  }
+
+  async function voiceLater(a, when) {
+    const [label, until] = snoozePick(when);
+    await api(`/api/approvals/${a.id}/snooze`, { method: 'POST', body: { until: until.toISOString() } });
+    removeApproval(a.id);
+    loadSnoozed();
+    nextInQueue({ removed: true });
+    const spoken = label.startsWith('After your exam') ? 'after your exam' : label.toLowerCase();
+    await say(`Okay, I'll bring it back ${spoken}.`);
+    await readCurrent();
+  }
+
+  function renderTalkCard() {
+    const box = $('#talk-card');
+    if (!box) return;
+    const a = talk.mode === 'talk' ? null : currentReply();
+    box.hidden = !a;
+    const chips = $('#talk-chips');
+    if (chips) chips.hidden = !!a;
+    if (!a) { box.innerHTML = ''; return; }
+    const btn = (text, label, cls = 'btn-ghost') => `<button type="button" class="btn ${cls} btn-sm" data-action="talk-say" data-text="${esc(text)}">${label}</button>`;
+    const actions = talk.mode === 'confirm'
+      ? `${btn('no', 'No')}${btn('yes', `${icon('send')}Yes, send`, 'btn-primary')}`
+      : `${btn('stop', 'Stop')}${btn('next', 'Next')}${btn('later', `${icon('clock')}Later`)}${btn('change it', `${icon('edit')}Change`)}${btn('send', `${icon('send')}Send`, 'btn-primary')}`;
+    box.innerHTML = `
+      <div class="who-meta">${channelBadge(a.channel)}<span aria-hidden="true">·</span><b>${esc(a.from)}</b>
+        <span class="muted">${talk.queue.length > 1 ? `${talk.index + 1} of ${talk.queue.length}` : ''}</span></div>
+      <div class="original">${esc(a.original)}</div>
+      <div class="field-label">Draft reply</div>
+      <div class="talk-draft">${esc(a.draft)}</div>
+      <div class="talk-actions">${actions}</div>`;
+  }
+
+  function openTalk({ replies = false } = {}) {
+    talk.open = true;
+    talk.mode = 'talk';
+    talk.loop = false;
+    talk.busy = false;
+    const v = voiceSupported();
+    const suggestions = ["What's on today?", 'What should I study?', "When's my next exam?", 'Go through my replies'];
+    openSheet(`
+      <h2 class="sheet-title" id="sheet-title">Talk to ${esc(M.agent.name)}</h2>
+      <div class="talk">
+        <div class="talk-card card" id="talk-card" hidden></div>
+        <div class="talk-log" id="talk-log" aria-live="polite"></div>
+        ${v ? `<div class="talk-controls">
+          <button type="button" class="talk-orb" id="talk-orb" data-action="talk-mic" aria-pressed="false" aria-label="Talk">${icon('mic')}</button>
+        </div>` : ''}
+        <p class="talk-status" id="talk-status" role="status">${v ? 'Tap the mic and ask' : 'Type below. (Voice needs Chrome or Edge.)'}</p>
+        <div class="chip-row talk-chips" id="talk-chips">
+          ${suggestions.map((s) => `<button type="button" class="chip chip-sm pressable" data-action="talk-say" data-text="${esc(s)}">${esc(s)}</button>`).join('')}
+        </div>
+        <form class="talk-form" data-form="talk">
+          <label class="sr-only" for="talk-input">Ask ${esc(M.agent.name)}</label>
+          <input id="talk-input" class="input" autocomplete="off" placeholder="Or type: remind me to submit the lab record Friday" />
+          <button class="btn btn-primary btn-sm" type="submit">Ask</button>
+        </form>
+        <p class="muted talk-note">${icon('info')}Sending always needs your yes. Food is planned, never ordered, by voice.</p>
+      </div>`, { focus: v ? '#talk-orb' : '#talk-input', onClose: closeTalk });
+    if (replies) {
+      talk.busy = true;
+      startReplies().catch(() => say("I can't reach the Aide server right now.")).finally(() => {
+        talk.busy = false;
+        renderTalkCard();
+        if (talk.open && voiceSupported() && talk.mode !== 'talk') talkListen(); else talkStatus(idleStatus());
+      });
+    }
+  }
+
+  function closeTalk() {
+    talk.open = false;
+    talk.loop = false;
+    talkStopListening();
+    if (speakSupported()) window.speechSynthesis.cancel();
+  }
+
+  // ----- change a draft by voice (the mic chip on each approval card) ---------
+  function voiceEditDraft(btn, id) {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { toast("Voice input isn't supported in this browser. Try Chrome or Edge."); return; }
+    if (recognition) { stopMic(); return; }
+    let heard = '';
+    recognition = new SR();
+    recognition.lang = voiceLang();
+    recognition.onresult = (e) => { heard = [...e.results].map((r) => r[0].transcript).join(''); };
+    recognition.onerror = (e) => {
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') toast('Microphone access is blocked. Allow it in your browser\'s site settings.');
+    };
+    recognition.onend = () => {
+      recognition = null;
+      btn.classList.remove('listening');
+      btn.setAttribute('aria-pressed', 'false');
+      if (heard.trim()) reviseLive(id, heard.trim());
+    };
+    recognition.start();
+    btn.classList.add('listening');
+    btn.setAttribute('aria-pressed', 'true');
+    toast('Say the change: "make it shorter", "say I\'ll send it tonight"…');
+  }
+
+  async function reviseLive(id, instruction) {
+    const item = state.approvals.find((a) => a.id === id);
+    if (!item || state.regenerating[id] || state.sending[id]) return;
+    if (!state.live) { toast('Changing drafts needs the Aide server'); return; }
+    const before = item.draft;
+    state.regenerating[id] = 'voice';
+    refreshCard(id);
+    try {
+      const a = await api(`/api/approvals/${id}/revise`, { method: 'POST', body: { instruction }, timeout: 60000 });
+      Object.assign(item, fromServer(a));
+      toast(item.draft === before ? `Couldn't do “${instruction}”. Try shorter, more formal, or “say …”.` : `Changed: “${instruction}”`);
+    } catch (e) {
+      toast(e.status === 409 ? 'That reply was already handled' : "Couldn't change the draft. Try again.");
+    }
+    delete state.regenerating[id];
+    refreshCard(id);
+  }
+
   // ===== Toasts =============================================================
   function toast(message, opts = {}) {
     const el = document.createElement('div');
@@ -2355,6 +2757,8 @@
       { label: `Tell ${M.agent.name} something`, icon: 'mic', run: openCapture },
       { label: 'Paste a message', icon: 'inbox', run: openPaste },
       { label: 'Search', icon: 'search', run: openSearch },
+      { label: `Talk to ${M.agent.name}`, icon: 'mic', run: () => openTalk() },
+      { label: 'Go through replies by voice', icon: 'mic', run: () => openTalk({ replies: true }) },
       { label: 'Study plan', icon: 'book', run: () => go('study') },
       { label: 'Order food', icon: 'food', run: () => { go('food'); const f = $('#food-text'); if (f) f.focus(); } },
       { label: 'Add a task', icon: 'plus', run: () => { go('tasks'); $('#task-title').focus(); } },
@@ -2513,6 +2917,23 @@
       toast('Add the topics (or leave them empty), then tap "Add to plan"');
     },
     'search-open': () => openSearch(),
+    'talk-open': () => openTalk(),
+    'talk-replies': () => openTalk({ replies: true }),
+    'talk-mic': () => {
+      if (talk.rec) { talk.loop = false; talkStopListening(); talkStatus(idleStatus()); return; }
+      if (talk.busy) return;
+      talk.loop = true;
+      talkListen();
+    },
+    'talk-say': (el) => { talk.loop = false; talkHandle(el.dataset.text); },
+    'talk-view': (el) => { closeSheet(); go(el.dataset.view); },
+    'voice-edit': (el) => voiceEditDraft(el, el.dataset.id),
+    'voice-speak-toggle': (el) => {
+      const on = !speakOn();
+      store.set('voiceSpeak', on);
+      el.setAttribute('aria-checked', String(on));
+      toast(on ? 'Aide will read answers aloud' : 'Answers will be shown, not spoken');
+    },
     'search-go': (el) => { closeSheet(); go(el.dataset.view); },
     'snooze-open': (el) => openSnooze(el.dataset.id),
     'snooze-pick': async (el) => {
@@ -2761,6 +3182,15 @@
       }).catch(asNote);
     }
 
+    if (kind === 'talk') {
+      const input = $('#talk-input');
+      const text = input.value.trim();
+      if (!text) { input.focus(); return; }
+      input.value = '';
+      talk.loop = false;
+      talkHandle(text);
+    }
+
     if (kind === 'paste') submitPaste(form);
 
     if (kind === 'task') {
@@ -2900,6 +3330,7 @@
       return;
     }
     if (t.id === 'voice-lang') { store.set('voiceLang', t.value); toast(`Voice language: ${t.selectedOptions[0].textContent}`); return; }
+    if (t.id === 'voice-rate') { store.set('voiceRate', Number(t.value)); toast(`Speaking speed: ${t.selectedOptions[0].textContent}`); return; }
     if (t.id === 'autosend-cap') {
       api('/api/autosend', { method: 'PUT', body: { dailyCap: Number(t.value) } })
         .then((a) => { state.autosend = a; toast(`Auto-send limit: ${a.dailyCap} a day`); })

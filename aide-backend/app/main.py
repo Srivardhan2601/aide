@@ -22,7 +22,7 @@ from .classifier import guess_group
 from .config import BUCKET_LABELS, CHANNELS, MINUTES_PER_REPLY, Settings, load_json, load_profile, load_rules, save_json
 from .db import DB, iso, local_day, parse_iso, streak, utcnow
 from . import deadlines as deadlines_mod
-from . import extras, food, phone
+from . import certs, extras, food, phone, voice
 from . import gmail as gmail_mod
 from .drafter import get_drafter
 from .sender import send_reply
@@ -71,6 +71,14 @@ class SnoozeIn(BaseModel):
 
 class CaptureIn(BaseModel):
     text: str = Field(min_length=1, max_length=1000)
+
+
+class ReviseIn(BaseModel):
+    instruction: str = Field(min_length=1, max_length=300)
+
+
+class VoiceIn(BaseModel):
+    text: str = Field(min_length=1, max_length=500)
 
 
 # "order 2 dosa from MTR", "get me a coffee", "...on swiggy" (but not "in order to submit")
@@ -445,15 +453,17 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
         token = pairing.pair(body.pin, phone.device_name(request.headers.get("user-agent", "")))
         if not token:
             raise HTTPException(401, "That PIN didn't match. Check Settings → Use on your phone on your computer.")
-        response.set_cookie(phone.COOKIE, token, max_age=phone.COOKIE_DAYS * 86400, httponly=True, samesite="strict")
+        response.set_cookie(phone.COOKIE, token, max_age=phone.COOKIE_DAYS * 86400, httponly=True, samesite="strict",
+                            secure=request.url.scheme == "https")
         log.info("Paired a new device from %s.", request.client.host if request.client else "?")
         return {"paired": True}
 
     @app.get("/api/lan")
     def lan_info(request: Request):
         local_only(request)
-        urls = [f"http://{ip}:{settings.port}" for ip in phone.lan_ips()]
+        urls = [f"https://{ip}:{settings.phone_port}" for ip in certs.private_ips(phone.lan_ips())]
         return {"enabled": settings.lan, "urls": urls, "pin": pairing.pin() if settings.lan else None,
+                "caFingerprint": certs.ca_fingerprint() if settings.lan else None,
                 "devices": [{k: d[k] for k in ("id", "name", "created")} for d in pairing.devices()]}
 
     @app.post("/api/lan/pin")
@@ -468,7 +478,7 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
             raise HTTPException(404, "Not found")
 
     @app.get("/api/lan/qr.svg")
-    def lan_qr(request: Request, url: str = Query(max_length=200, pattern=r"^http://[\d.]+:\d+/?$")):
+    def lan_qr(request: Request, url: str = Query(max_length=200, pattern=r"^https://[\d.]+:\d+/?$")):
         local_only(request)
         return Response(phone.qr_svg(url), media_type="image/svg+xml", headers={"Cache-Control": "no-store"})
 
@@ -529,6 +539,22 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
         if not db.update_approval(approval_id, where_status=("pending",), draft=d.draft, ai_draft=d.draft,
                                   tone=body.tone, confidence=d.confidence, bucket=d.bucket, reason=d.reason):
             conflict(db.get_approval(approval_id), "regenerate")
+        return aj(db.get_approval(approval_id))
+
+    @app.post("/api/approvals/{approval_id}/revise")
+    def revise(approval_id: int, body: ReviseIn):
+        """Change the draft the way you asked, typed or spoken: "make it shorter", "say I'll send it tonight".
+        The same safety checks apply as for any draft."""
+        r = get_or_404(approval_id)
+        if r["status"] != "pending":
+            conflict(r, "change")
+        d = drafter.draft(channel=r["channel"], sender=r["sender"], text=r["original"], previous_draft=r["draft"],
+                          instruction=body.instruction,
+                          history=db.conversation(r["channel"], r["sender"], before_message_id=r["message_id"]),
+                          about=extra["notes_for"](r["sender"]) if extra else "")
+        if not db.update_approval(approval_id, where_status=("pending",), draft=d.draft, ai_draft=d.draft,
+                                  confidence=d.confidence, bucket=d.bucket, reason=d.reason):
+            conflict(db.get_approval(approval_id), "change")
         return aj(db.get_approval(approval_id))
 
     @app.post("/api/approvals/{approval_id}/approve")
@@ -874,6 +900,157 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
             r.setdefault("buckets", {}).setdefault(k, {})["covers"] = _clean_rules(getattr(body, k))
         save_json("rules.json", r)
         return rules_json(r)
+
+    # ----- talk to Aide (voice) ---------------------------------------------------
+    CHANNEL_NAMES = {"gmail": "Gmail", "outlook": "Outlook", "whatsapp": "WhatsApp", "instagram": "Instagram",
+                     "x": "X", "telegram": "Telegram", "slack": "Slack", "linkedin": "LinkedIn", "calendar": "Calendar"}
+
+    def spoken_due(d: dict, today: date) -> str:
+        return voice.when_words(date.fromisoformat(d["dueDate"]), today) + voice.time_words(d["dueTime"])
+
+    def upcoming_exams(today: date) -> list[dict]:
+        """Exams from Tasks and from the study plan (one entry per exam)."""
+        out = [{"title": d["title"], "day": date.fromisoformat(d["dueDate"]), "time": d["dueTime"]}
+               for d in map(deadline_json, db.list_deadlines()) if d["kind"] == "exam" and d["dueDate"] >= today.isoformat()]
+        seen = {(e["day"], voice.norm(e["title"])) for e in out}
+        for s in (extra["subjects"]() if extra else []):
+            if s["exam_date"] >= today and not any(day == s["exam_date"] and voice.norm(s["name"]) in t for day, t in seen):
+                out.append({"title": f"{s['name']} exam", "day": s["exam_date"], "time": None})
+        return sorted(out, key=lambda e: (e["day"], e["time"] or "99:99"))
+
+    STOPWORDS = {"when", "is", "my", "the", "next", "exam", "exams", "test", "what", "whats", "what's", "about",
+                 "for", "a", "an", "do", "i", "have", "and", "on", "of", "upcoming", "date", "day", "time"}
+
+    def talk_answer(text: str) -> dict:
+        intent = voice.talk_intent(text)
+        today = datetime.now().date()
+        out = lambda say, **kw: {"intent": intent, "say": say, **kw}  # noqa: E731
+
+        if intent == "stop":
+            return out("Okay. I'm here when you need me.", end=True)
+        if intent == "help":
+            return out(voice.HELP)
+        if intent == "replies":
+            n = len(db.list_approvals("pending"))
+            if not n:
+                return out("No replies are waiting. You're all caught up.")
+            return out(f"Okay, let's go through your {n} {'reply' if n == 1 else 'replies'}.", action="replies")
+        if intent == "food":
+            res = capture(CaptureIn(text=text[:1000]))
+            if res["kind"] != "food":
+                return out("I couldn't tell what to order. Try: order 2 masala dosa from MTR.")
+            o = res["order"]
+            items = voice.join_words([f"{i['qty']} {i['name']}" for i in o["items"]])
+            frm = f" from {o['restaurant']}" if o["restaurant"] else ""
+            return out(f"I've planned a {o['appLabel']} cart: {items}{frm}. Check it in Food and approve it there. "
+                       "I never place orders by voice.", view="food")
+        if intent == "add":
+            rem = voice.parse_reminder(text)
+            if not rem:
+                return out("When is it due? Say it again with a day, like: remind me to submit the lab record on Friday.")
+            dup = any(r["title"].lower() == rem["title"].lower() and r["due_date"] == rem["due_date"]
+                      for r in db.list_deadlines())
+            did = None if dup else db.add_deadline(**rem, source="manual")
+            when = spoken_due({"dueDate": rem["due_date"], "dueTime": rem["due_time"]}, today)
+            if not did:
+                return out(f"{rem['title']} is already on your list.", view="tasks")
+            return out(f"Added: {rem['title']}, {when}.", view="tasks")
+        if intent == "study":
+            if not (extra["subjects"]() if extra else []):
+                return out("You don't have a study plan yet. Open Study, add your exams and topics, and I'll plan your days.",
+                           view="study")
+            sessions = extra["study_today"]()
+            left = [s for s in sessions if not s["done"]]
+            if not sessions:
+                return out("Nothing is planned for today. Enjoy the break, or replan in Study.", view="study")
+            if not left:
+                return out("You've finished today's study plan. Nice work!", view="study")
+            total = voice.minutes_words(sum(s["minutes"] for s in left))
+            parts = [f"{s['subject']}, {s['topic']}" if s["topic"] != "Full revision" else f"full revision of {s['subject']}"
+                     for s in left[:4]]
+            if len(left) == 1:
+                return out(f"Today you have {total} of study: {parts[0]}.", view="study")
+            listed = f"{', '.join(parts)}, and {len(left) - 4} more" if len(left) > 4 else voice.join_words(parts)
+            return out(f"Today you have {total} of study: {listed}. Start with {parts[0]}.",
+                       view="study")
+        if intent == "exam":
+            exams = upcoming_exams(today)
+            if not exams:
+                return out("I don't see any upcoming exams. Add them in Study or Tasks.")
+            words = {w for w in voice.norm(text).split() if len(w) > 1 and w not in STOPWORDS}
+            match = next((e for e in exams if words & set(voice.norm(e["title"]).split())), None)
+            e = match or exams[0]
+            days = (e["day"] - today).days
+            first = (f"{'Your' if match else 'Your next exam is'} {e['title']}" + (" is" if match else "")
+                     + f" {voice.when_words(e['day'], today)}{voice.time_words(e['time'])}"
+                     + (f", in {days} days" if days >= 2 else "") + ".")
+            rest = [x for x in exams if x is not e][:2] if not match else []
+            if rest:
+                first += " After that: " + voice.join_words(
+                    [f"{x['title']} {voice.when_words(x['day'], today)}" for x in rest]) + "."
+            return out(first)
+        if intent == "due":
+            week_end = (today + timedelta(days=7)).isoformat()
+            dls = [d for d in map(deadline_json, db.list_deadlines()) if d["dueDate"] <= week_end]
+            if not dls:
+                return out("Nothing is due in the next week.")
+            items = [f"{d['title']} {spoken_due(d, today)}" for d in dls[:4]]
+            more = f", and {len(dls) - 4} more" if len(dls) > 4 else ""
+            n = len(dls)
+            return out(f"{n} {'thing is' if n == 1 else 'things are'} due this week: {'; '.join(items)}{more}.", view="tasks")
+        if intent == "messages":
+            pending = db.list_approvals("pending")
+            if not pending:
+                return out("No new messages need you. You're all caught up.")
+            who = [f"{r['sender']} on {CHANNEL_NAMES.get(r['channel'], r['channel'])}" for r in pending[:4]]
+            n = len(pending)
+            names = f"{', '.join(who)}, and {n - 4} more" if n > 4 else voice.join_words(who)
+            return out(f"{n} {'reply is' if n == 1 else 'replies are'} waiting: {names}. "
+                       "Say go through my replies to handle them by voice.")
+        if intent == "brief":
+            b = brief()
+            parts = [voice.greeting()]
+            if b["pending"]:
+                n = b["pending"]
+                parts.append(f"{n} {'reply needs' if n == 1 else 'replies need'} you.")
+            if b["overdue"]:
+                parts.append(f"Overdue: {voice.join_words([d['title'] for d in b['overdue'][:3]])}.")
+            if b["today"]:
+                parts.append(f"Due today: {voice.join_words([d['title'] + voice.time_words(d['dueTime']) for d in b['today'][:3]])}.")
+            if b["tomorrow"]:
+                parts.append(f"Tomorrow: {voice.join_words([d['title'] for d in b['tomorrow'][:3]])}.")
+            left = [s for s in b["study"] if not s["done"]]
+            if left:
+                parts.append(f"Study today: {voice.minutes_words(sum(s['minutes'] for s in left))}, "
+                             f"starting with {left[0]['subject']}.")
+            if b["quiet"]["active"]:
+                parts.append("Quiet mode is on.")
+            if len(parts) == 1:
+                parts.append("Nothing needs you right now. Good time to study.")
+            elif b["pending"]:
+                parts.append("Say go through my replies to handle them.")
+            return out(" ".join(parts))
+        return out("Sorry, I didn't get that. " + voice.HELP)
+
+    @app.post("/api/voice/talk")
+    def voice_talk(body: VoiceIn):
+        """Answer a short spoken question from your own data: {say, view?, action?, end?}."""
+        return talk_answer(" ".join(body.text.split()))
+
+    @app.post("/api/voice/command")
+    def voice_command(body: VoiceIn):
+        """What you said while Aide reads you a reply: {cmd, instruction?, when?, confirm}."""
+        return {**voice.reply_command(body.text), "confirm": voice.confirm_answer(body.text)}
+
+    # The home certificate for phones (public, safe to share). Only when phone access is on.
+    @app.get("/aide-home-ca.crt")
+    def home_ca():
+        der = certs.ca_der() if settings.lan else None
+        if not der:
+            raise HTTPException(404, "Phone access is off")
+        return Response(der, media_type="application/x-x509-ca-cert",
+                        headers={"Content-Disposition": 'attachment; filename="aide-home-ca.crt"',
+                                 "Cache-Control": "no-store"})
 
     # The UI and the API share an origin. Mounted last so /api routes win.
     if settings.ui_dir.is_dir():

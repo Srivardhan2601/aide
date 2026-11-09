@@ -30,3 +30,7 @@ aide-backend/_from_other_session/
 aide-backend/backups/
 *.aide-backup.json
 aide-backup-*.json
+
+# Phone HTTPS certificates and keys (made on this computer)
+aide-backend/certs/
+*.key

@@ -362,4 +362,4 @@ def register(app: FastAPI, db: DB, local_only) -> dict:
         db.set_setting("autosend", a)
         return autosend_json()
 
-    return {"study_today": study_today, "notes_for": notes_for, "autosend": autosend}
+    return {"study_today": study_today, "notes_for": notes_for, "autosend": autosend, "subjects": subjects}

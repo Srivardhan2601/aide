@@ -55,7 +55,7 @@ def test_phone_cannot_see_pin_or_manage_devices(lan):
     phone_c.post("/api/pair", json={"pin": laptop.get("/api/lan").json()["pin"]})
     assert phone_c.get("/api/lan").status_code == 403
     assert phone_c.post("/api/lan/pin").status_code == 403
-    assert phone_c.get("/api/lan/qr.svg", params={"url": "http://192.168.1.5:8000"}).status_code == 403
+    assert phone_c.get("/api/lan/qr.svg", params={"url": "https://192.168.1.5:8443"}).status_code == 403
 
 
 def test_removing_a_device_revokes_it(lan):
@@ -85,7 +85,7 @@ def test_forged_cookie_is_rejected(lan):
 
 def test_qr_code(lan):
     _, laptop, _, _ = lan
-    r = laptop.get("/api/lan/qr.svg", params={"url": "http://192.168.1.5:8000"})
+    r = laptop.get("/api/lan/qr.svg", params={"url": "https://192.168.1.5:8443"})
     assert r.status_code == 200 and r.headers["content-type"].startswith("image/svg+xml") and "<svg" in r.text
     assert laptop.get("/api/lan/qr.svg", params={"url": "javascript:alert(1)"}).status_code == 422
 

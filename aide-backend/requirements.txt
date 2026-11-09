@@ -7,3 +7,5 @@ pytest>=8.0
 google-api-python-client>=2.100
 google-auth-oauthlib>=1.2
 qrcode>=7.4
+# HTTPS certificate for phone access (start-phone.cmd)
+cryptography>=42

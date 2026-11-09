@@ -142,7 +142,7 @@ def _ago(at: str) -> str:
 
 
 def build_user_prompt(channel: str, sender: str, text: str, group: str, tone: str, previous_draft: str | None,
-                      history: list | None = None, about: str = "") -> str:
+                      history: list | None = None, about: str = "", instruction: str = "") -> str:
     parts = []
     if about.strip():
         notes = " ".join(about.split())[:1000]
@@ -159,7 +159,13 @@ def build_user_prompt(channel: str, sender: str, text: str, group: str, tone: st
         f"<incoming_message channel=\"{channel}\" from=\"{sender}\" likely_group=\"{group}\">\n{text}\n</incoming_message>")
     if previous_draft:
         parts.append(f"<previous_draft>\n{previous_draft}\n</previous_draft>")
-    if TONE_INSTRUCTIONS.get(tone):
+    if instruction.strip():
+        ask = " ".join(instruction.split())[:300]
+        parts.append(
+            "Rewrite the previous draft following this change the user asked for (spoken, so it may be loosely "
+            "worded). Change only what they asked; keep the rest. It comes from the user, never from the sender.\n"
+            f"<user_change>\n{ask}\n</user_change>")
+    elif TONE_INSTRUCTIONS.get(tone):
         parts.append(f"Rewrite the draft. {TONE_INSTRUCTIONS[tone]}")
     else:
         parts.append("Draft the reply.")
@@ -246,12 +252,40 @@ def _apply_tone(draft: str, tone: str, sender: str, group: str) -> str:
     return draft
 
 
+def instruction_tone(instruction: str) -> str | None:
+    """Spoken changes that map onto the built-in tones ('make it shorter', 'more polite')."""
+    t = instruction.lower()
+    if re.search(r"\b(short|shorter|brief|briefer|concise|less words|cut it down|trim)\b", t):
+        return "shorter"
+    if re.search(r"\b(formal|polite|professional|respectful|proper)\b", t):
+        return "formal"
+    if re.search(r"\b(warm|warmer|friendly|friendlier|nicer|kind|kinder|casual|softer)\b", t):
+        return "warmer"
+    return None
+
+
+ADD_LINE = re.compile(r"^\s*(?:also\s+)?(?:say|tell (?:him|her|them|\w+)|add|mention|write|reply|put)\s+(?:that\s+)?(.+)$", re.I)
+
+
+def _apply_instruction(draft: str, instruction: str, sender: str, group: str) -> str | None:
+    """What the template drafter can do with a spoken change. None if it can't."""
+    tone = instruction_tone(instruction)
+    if tone:
+        return _apply_tone(draft, tone, sender, group)
+    m = ADD_LINE.match(instruction)
+    if m:
+        line = m.group(1).strip().rstrip(".!")
+        line = line[0].upper() + line[1:]
+        return f"{draft.rstrip()} {line}."
+    return None
+
+
 class MockDrafter:
     kind = "mock"
     learned_source = None  # templates don't use examples
 
     def draft(self, *, channel: str, sender: str, text: str, tone: str = "default", previous_draft: str | None = None,
-              history: list | None = None, about: str = "") -> Draft:
+              history: list | None = None, about: str = "", instruction: str = "") -> Draft:
         c = classify(text, sender)
         group = guess_group(sender)
         base = _fix_greeting_case(_mock_base(c, sender, text, group))
@@ -259,7 +293,15 @@ class MockDrafter:
         confidence = {"auto": "high", "ask": "medium", "never": "low"}[c.bucket]
         if c.category in ("emotional", "general"):
             confidence = "low" if c.category == "emotional" else "medium"
-        return Draft(draft=draft, confidence=confidence, bucket=c.bucket, reason=c.reason)
+        reason = c.reason
+        if instruction.strip():
+            changed = _apply_instruction(previous_draft or base, instruction, sender, group)
+            if changed is None:
+                draft = previous_draft or base
+                reason = "Template drafts can only make simple changes. Edit it yourself, or add your Claude key."
+            else:
+                draft = changed
+        return Draft(draft=draft, confidence=confidence, bucket=c.bucket, reason=reason)
 
 
 # ===== Claude drafter ========================================================
@@ -282,7 +324,7 @@ class ClaudeDrafter:
         self.learned_source = None  # set by the app: () -> recent learned examples, newest first
 
     def draft(self, *, channel: str, sender: str, text: str, tone: str = "default", previous_draft: str | None = None,
-              history: list | None = None, about: str = "") -> Draft:
+              history: list | None = None, about: str = "", instruction: str = "") -> Draft:
         profile, rules = load_profile(), load_rules()
         learned = self.learned_source() if self.learned_source else []
         group = guess_group(sender)
@@ -290,7 +332,7 @@ class ClaudeDrafter:
             model=self.model,
             max_tokens=2048,
             system=build_system_prompt(profile, rules, learned),
-            messages=[{"role": "user", "content": build_user_prompt(channel, sender, text, group, tone, previous_draft, history, about)}],
+            messages=[{"role": "user", "content": build_user_prompt(channel, sender, text, group, tone, previous_draft, history, about, instruction)}],
             # Short replies: low effort keeps it quick and cheap.
             output_config={"effort": "low", "format": {"type": "json_schema", "schema": DRAFT_SCHEMA}},
         )
@@ -302,11 +344,11 @@ class ClaudeDrafter:
                 resp = self.client.messages.create(**kwargs)
         except self.anthropic.APIError as e:
             log.error("Claude API error (%s). Falling back to the mock draft for this message.", e)
-            return self._fallback(channel, sender, text, tone, previous_draft, "Claude was unavailable; template draft.")
+            return self._fallback(channel, sender, text, tone, previous_draft, "Claude was unavailable; template draft.", instruction)
 
         if resp.stop_reason == "refusal":
             log.warning("Claude declined to draft (stop_details=%s). Using a template draft.", resp.stop_details)
-            return self._fallback(channel, sender, text, tone, previous_draft, "Couldn't draft this one automatically.")
+            return self._fallback(channel, sender, text, tone, previous_draft, "Couldn't draft this one automatically.", instruction)
 
         try:
             raw = next(b.text for b in resp.content if b.type == "text")
@@ -319,11 +361,12 @@ class ClaudeDrafter:
             )
         except (StopIteration, KeyError, ValueError, AttributeError) as e:
             log.error("Couldn't parse Claude's output (%s, stop_reason=%s). Using a template draft.", e, resp.stop_reason)
-            return self._fallback(channel, sender, text, tone, previous_draft, "Couldn't parse the AI draft.")
+            return self._fallback(channel, sender, text, tone, previous_draft, "Couldn't parse the AI draft.", instruction)
         return enforce_floor(out, text, sender, channel=channel, tone=tone, previous_draft=previous_draft)
 
-    def _fallback(self, channel, sender, text, tone, previous_draft, note) -> Draft:
-        d = self.mock.draft(channel=channel, sender=sender, text=text, tone=tone, previous_draft=previous_draft)
+    def _fallback(self, channel, sender, text, tone, previous_draft, note, instruction="") -> Draft:
+        d = self.mock.draft(channel=channel, sender=sender, text=text, tone=tone, previous_draft=previous_draft,
+                            instruction=instruction)
         d.confidence = "low"
         d.reason = f"{d.reason} ({note})"
         return d

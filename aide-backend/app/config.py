@@ -35,6 +35,7 @@ class Settings:
     # Phone access on home Wi-Fi: off unless AIDE_LAN=on (start-phone.cmd). See app/phone.py.
     lan: bool = False
     port: int = 8000
+    phone_port: int = 8443  # HTTPS for the phone (see app/certs.py)
     cors_origins: list[str] = field(default_factory=lambda: [
         "http://localhost:8000", "http://127.0.0.1:8000",
         "http://localhost:5173", "http://127.0.0.1:5173",
@@ -52,6 +53,7 @@ class Settings:
             gmail_poll_seconds=float(os.environ.get("AIDE_GMAIL_POLL_SECONDS", "60")),
             lan=os.environ.get("AIDE_LAN", "off").lower() in ("on", "1", "true", "yes"),
             port=int(os.environ.get("AIDE_PORT", "8000")),
+            phone_port=int(os.environ.get("AIDE_PHONE_PORT", "8443")),
         )
 
 
