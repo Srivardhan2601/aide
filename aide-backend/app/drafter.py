@@ -142,8 +142,11 @@ def _ago(at: str) -> str:
 
 
 def build_user_prompt(channel: str, sender: str, text: str, group: str, tone: str, previous_draft: str | None,
-                      history: list | None = None) -> str:
+                      history: list | None = None, about: str = "") -> str:
     parts = []
+    if about.strip():
+        notes = " ".join(about.split())[:1000]
+        parts.append(f"<about_sender>\nYour own notes about {sender} (use them for tone and context):\n{notes}\n</about_sender>")
     if history:
         lines = "\n".join(
             f"[{'them' if h['who'] == 'them' else 'you'}, {_ago(h['at'])}] {' '.join(h['text'].split())[:400]}"
@@ -248,7 +251,7 @@ class MockDrafter:
     learned_source = None  # templates don't use examples
 
     def draft(self, *, channel: str, sender: str, text: str, tone: str = "default", previous_draft: str | None = None,
-              history: list | None = None) -> Draft:
+              history: list | None = None, about: str = "") -> Draft:
         c = classify(text, sender)
         group = guess_group(sender)
         base = _fix_greeting_case(_mock_base(c, sender, text, group))
@@ -279,7 +282,7 @@ class ClaudeDrafter:
         self.learned_source = None  # set by the app: () -> recent learned examples, newest first
 
     def draft(self, *, channel: str, sender: str, text: str, tone: str = "default", previous_draft: str | None = None,
-              history: list | None = None) -> Draft:
+              history: list | None = None, about: str = "") -> Draft:
         profile, rules = load_profile(), load_rules()
         learned = self.learned_source() if self.learned_source else []
         group = guess_group(sender)
@@ -287,7 +290,7 @@ class ClaudeDrafter:
             model=self.model,
             max_tokens=2048,
             system=build_system_prompt(profile, rules, learned),
-            messages=[{"role": "user", "content": build_user_prompt(channel, sender, text, group, tone, previous_draft, history)}],
+            messages=[{"role": "user", "content": build_user_prompt(channel, sender, text, group, tone, previous_draft, history, about)}],
             # Short replies: low effort keeps it quick and cheap.
             output_config={"effort": "low", "format": {"type": "json_schema", "schema": DRAFT_SCHEMA}},
         )

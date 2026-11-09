@@ -89,6 +89,33 @@ CREATE TABLE IF NOT EXISTS deadlines (
     UNIQUE (message_id, due_date, kind)
 );
 
+-- Exam study planner: subjects (with exam date and topics) and the day-by-day sessions built from them.
+CREATE TABLE IF NOT EXISTS study_subjects (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    name              TEXT NOT NULL,
+    exam_date         TEXT NOT NULL,            -- local YYYY-MM-DD
+    topics            TEXT NOT NULL,            -- JSON list of topic names
+    minutes_per_topic INTEGER NOT NULL DEFAULT 60,
+    created_at        TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS study_sessions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    subject_id  INTEGER NOT NULL REFERENCES study_subjects(id) ON DELETE CASCADE,
+    subject     TEXT NOT NULL,
+    topic       TEXT NOT NULL,
+    kind        TEXT NOT NULL CHECK (kind IN ('study', 'revision')),
+    day         TEXT NOT NULL,                  -- local YYYY-MM-DD
+    minutes     INTEGER NOT NULL,
+    done        INTEGER NOT NULL DEFAULT 0
+);
+
+-- Notes about people, used when drafting replies to them.
+CREATE TABLE IF NOT EXISTS people (
+    name        TEXT PRIMARY KEY COLLATE NOCASE,
+    notes       TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL
+);
+
 -- Small app settings (quiet mode, ...), stored as JSON values.
 CREATE TABLE IF NOT EXISTS kv (
     key   TEXT PRIMARY KEY,
@@ -148,6 +175,10 @@ class DB:
     def _migrate(self) -> None:
         """Add columns that older databases don't have yet."""
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(approvals)")}
+        if "snooze_until" not in cols:  # "Remind me later": hidden from the queue until this time (UTC ISO)
+            self.conn.execute("ALTER TABLE approvals ADD COLUMN snooze_until TEXT")
+        if "auto_sent" not in cols:     # sent by auto-send rather than by you
+            self.conn.execute("ALTER TABLE approvals ADD COLUMN auto_sent INTEGER NOT NULL DEFAULT 0")
         if "ai_draft" not in cols:
             # Aide's latest draft, kept separately so we can tell when you edited it.
             self.conn.execute("ALTER TABLE approvals ADD COLUMN ai_draft TEXT")
@@ -184,12 +215,34 @@ class DB:
         with self.lock:
             return self.conn.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
 
-    def list_approvals(self, status: str | None = None) -> list[sqlite3.Row]:
+    def list_approvals(self, status: str | None = None, include_snoozed: bool = False) -> list[sqlite3.Row]:
+        """Pending replies that are snoozed ("remind me later") are left out until their time comes."""
         with self.lock:
+            if status == "pending" and not include_snoozed:
+                return self.conn.execute(
+                    """SELECT * FROM approvals WHERE status = 'pending' AND (snooze_until IS NULL OR snooze_until <= ?)
+                       ORDER BY created_at, id""", (iso(utcnow()),)).fetchall()
             if status:
                 return self.conn.execute(
                     "SELECT * FROM approvals WHERE status = ? ORDER BY created_at, id", (status,)).fetchall()
             return self.conn.execute("SELECT * FROM approvals ORDER BY created_at, id").fetchall()
+
+    def snoozed(self) -> list[sqlite3.Row]:
+        with self.lock:
+            return self.conn.execute(
+                "SELECT * FROM approvals WHERE status = 'pending' AND snooze_until > ? ORDER BY snooze_until",
+                (iso(utcnow()),)).fetchall()
+
+    def has_replied_to(self, channel: str, sender: str) -> bool:
+        with self.lock:
+            return self.conn.execute(
+                """SELECT 1 FROM sent s JOIN approvals a ON a.id = s.approval_id
+                   WHERE a.channel = ? AND a.sender = ? LIMIT 1""", (channel, sender)).fetchone() is not None
+
+    def auto_sent_since(self, since_iso: str) -> int:
+        with self.lock:
+            return self.conn.execute("SELECT COUNT(*) FROM approvals WHERE auto_sent = 1 AND created_at >= ?",
+                                     (since_iso,)).fetchone()[0]
 
     def update_approval(self, approval_id: int, *, where_status: tuple[str, ...] | None = None, **fields) -> bool:
         """Update fields; with where_status, only if the row is currently in one of those states.
@@ -424,6 +477,8 @@ class DB:
         return {r["day"]: r["handled"] for r in rows}
 
     def count_status(self, status: str) -> int:
+        if status == "pending":
+            return len(self.list_approvals("pending"))  # not counting snoozed ones
         with self.lock:
             return self.conn.execute("SELECT COUNT(*) FROM approvals WHERE status = ?", (status,)).fetchone()[0]
 

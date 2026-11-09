@@ -93,6 +93,7 @@
     status: a.status,
     sendAt: a.sendAt,
     urgent: !!a.urgent,
+    snoozeUntil: a.snoozeUntil,
   });
 
   // ===== Icons ==============================================================
@@ -135,6 +136,10 @@
     info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
     alert: '<path d="M12 3l9.5 17h-19z"/><path d="M12 10v4M12 17h.01"/>',
     ban: '<circle cx="12" cy="12" r="9"/><path d="M6 6l12 12"/>',
+    book: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5A2.5 2.5 0 0 0 6.5 23H20v-5"/>',
+    people: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><circle cx="17" cy="9" r="2.5"/><path d="M16 14.6a5 5 0 0 1 5.5 5.4"/>',
+    download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
+    upload: '<path d="M12 16V5M7 10l5-5 5 5M5 20h14"/>',
   };
   const checkDraw = () => '<svg class="check-draw" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M7.5 12.5l3 3 6-6.5"/></svg>';
   const icon = (name) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
@@ -147,14 +152,16 @@
     { id: 'approvals', label: 'Approvals', icon: 'approvals' },
     { id: 'activity', label: 'Activity', icon: 'activity' },
     { id: 'food', label: 'Food', icon: 'food' },
+    { id: 'study', label: 'Study', icon: 'book' },
     { id: 'tasks', label: 'Tasks', icon: 'tasks' },
+    { id: 'people', label: 'People', icon: 'people' },
     { id: 'rules', label: 'Rules', icon: 'rules' },
     { id: 'settings', label: 'Settings', icon: 'settings' },
   ];
 
   // Mobile bottom bar: 5 items, Chat in the middle. Everything else lives under More.
   const TABS = ['home', 'approvals', 'chat', 'activity', 'more'];
-  const MORE_VIEWS = ['food', 'apps', 'tasks', 'rules', 'settings'];
+  const MORE_VIEWS = ['study', 'tasks', 'food', 'people', 'apps', 'rules', 'settings'];
 
   const urlView = new URLSearchParams(location.search).get('view');
   const state = {
@@ -195,6 +202,12 @@
     needsPair: false, // a phone on the Wi-Fi that hasn't entered the PIN yet
     lan: null, // phone access info (only answered on the computer running Aide)
     weekly: null, // /api/weekly (Activity screen)
+    study: null, // /api/study
+    people: null, // /api/people
+    peopleFilter: '',
+    snoozed: null, // replies you asked to be reminded about later
+    autosend: null,
+    pendingRestore: null,
     wasQuiet: false,
     // Food: carts planned and checked in Aide, then placed by Claude with the official connector.
     food: { orders: null, profile: null, app: null, busy: false, showPrefs: false },
@@ -297,6 +310,7 @@
     $('#topbar').innerHTML = `
       <h1 class="page-title">${title}</h1>
       <div class="topbar-right">
+        <button class="icon-btn" data-action="search-open" aria-label="Search" title="Search">${icon('search')}</button>
         ${quiet().active ? `<button class="status quiet" data-action="quiet-open" title="Quiet mode until ${esc(fmtClock(quiet().until))}">${icon('moon')}<span class="desktop-only">Quiet</span></button>` : ''}
         <span class="status ${on ? 'on' : 'off'}" role="status"><span class="dot"></span>${on ? 'Active' : 'Paused'}</span>
         <button class="icon-btn desktop-only" data-action="toggle-theme" aria-label="Switch to ${isDark() ? 'light' : 'dark'} mode">${icon(isDark() ? 'sun' : 'moon')}</button>
@@ -510,6 +524,7 @@
           <form class="composer" data-form="chat">
             <label for="chat-input" class="sr-only">Message ${esc(M.agent.name)}</label>
             <textarea id="chat-input" rows="1" placeholder="Ask ${esc(M.agent.name)} anything…"></textarea>
+            ${micButton('#chat-input')}
             <button class="send-btn" type="submit" aria-label="Send message">${icon('send')}</button>
           </form>
           <p class="composer-hint">Enter to send · Shift + Enter for a new line · ${MOD} K for commands</p>
@@ -579,6 +594,7 @@
             ${TONES.map((t) => `<button class="chip chip-sm pressable ${regen === t.key ? 'is-busy' : ''}" data-action="tone-draft" data-id="${a.id}" data-tone="${t.key}" ${regen ? 'disabled' : ''}>${esc(t.label)}</button>`).join('')}
           </div>` : switchEl('auto-' + a.id, a.autoSend, 'Always auto-send this type', `data-action="autosend" data-id="${a.id}"`)}
           <div class="actions">
+            ${state.live ? `<button class="btn btn-ghost" data-action="snooze-open" data-id="${a.id}" title="Remind me later">${icon('clock')}Later</button>` : ''}
             <button class="btn btn-ghost" data-action="reject" data-id="${a.id}">Skip</button>
             <button class="btn btn-secondary" data-action="edit-draft" data-id="${a.id}">${icon('edit')}Edit</button>
             <button class="btn btn-primary" data-action="approve" data-id="${a.id}" ${regen ? 'disabled' : ''}>${icon('send')}Approve</button>
@@ -635,6 +651,7 @@
               ${pasteBtn}
             </div>
           </div>
+          ${snoozedSection()}
         </div>`;
     }
     return `
@@ -646,6 +663,7 @@
         </div>
         <p class="swipe-hint mobile-only">Swipe right to approve, left to skip.</p>
         <div class="stack" data-stagger>${state.approvals.map(approvalCard).join('')}</div>
+        ${snoozedSection()}
       </div>`;
   }
 
@@ -861,6 +879,7 @@
         <div class="tl-meta">${channelBadge(e.channel)}<span aria-hidden="true">·</span>${esc(e.time)}${e.transport === 'mock' ? '<span aria-hidden="true">·</span><span title="Sending is simulated for this app until it is connected">simulated</span>' : ''}</div>
       </div>
       <div class="tl-right">
+        ${e.auto ? '<span class="pill s-scheduled" title="Sent by auto-send">Auto-sent</span>' : ''}
         ${e.learned ? `<span class="pill s-learned" title="You edited this before sending, so ${esc(M.agent.name)} learned from it">${icon('sparkle')}Learned</span>` : ''}
         <span class="pill s-${e.status}">${STATUS_LABEL[e.status] || e.status}</span>
         ${e.undoable && e.status !== 'undone' ? `<button class="btn btn-ghost btn-sm" data-action="undo-activity" data-id="${e.id}">${icon('undo')}Undo</button>` : ''}
@@ -1111,6 +1130,17 @@
             <div class="brief-label">${label}</div>
             <ul>${list.slice(0, 4).map((d) => item(d, overdue)).join('')}</ul>
           </div>`).join('')}
+        ${b.study && b.study.length ? `
+          <div class="brief-group">
+            <div class="brief-label">Study today</div>
+            <ul>${b.study.slice(0, 4).map((x) => `
+              <li class="brief-item ${x.done ? 'is-done' : ''}">
+                <span class="bi-icon k-exam">${icon(x.done ? 'check' : 'book')}</span>
+                <span class="bi-title">${esc(x.subject)}: ${esc(x.topic)}</span>
+                <span class="bi-when">${fmtMinsLong(x.minutes)}</span>
+              </li>`).join('')}</ul>
+          </div>` : ''}
+        ${b.snoozed ? `<button class="brief-link" data-action="nav" data-view="approvals">${icon('clock')}${b.snoozed} snoozed repl${b.snoozed === 1 ? 'y' : 'ies'} coming back later</button>` : ''}
         ${b.thisWeek.length ? `<button class="brief-link" data-action="nav" data-view="tasks">${icon('tasks')}${b.thisWeek.length} more this week</button>` : ''}
         ${b.foodOpen ? `<button class="brief-link" data-action="nav" data-view="food">${icon('food')}${b.foodOpen} food cart${b.foodOpen === 1 ? '' : 's'} waiting for you</button>` : ''}
         <div class="brief-actions">
@@ -1149,7 +1179,7 @@
       <div class="page">
         <p class="page-sub">Exams, deadlines, meetings and payments. ${esc(M.agent.name)} adds them when a message mentions one ("report due Monday", "viva on 12th"), and you can add your own.</p>
         <form class="card dl-form" data-form="deadline">
-          <input class="input dl-title" name="title" maxlength="120" placeholder="e.g. DBMS end-sem exam" aria-label="What's due" autocomplete="off" required />
+          <div class="with-mic dl-title-wrap"><input class="input dl-title" id="dl-title" name="title" maxlength="120" placeholder="e.g. DBMS end-sem exam" aria-label="What's due" autocomplete="off" required />${micButton('#dl-title')}</div>
           <select class="select" name="kind" aria-label="Type">
             ${Object.entries(KIND_NAME).map(([k, l]) => `<option value="${k}" ${k === 'exam' ? 'selected' : ''}>${l === 'Due' ? 'Assignment' : l}</option>`).join('')}
           </select>
@@ -1321,6 +1351,319 @@
             : `<span>${icon('moon')}Off.${q.allow.length ? ` Always allowed: ${esc(q.allow.join(', '))}.` : ''}</span><span class="spacer"></span><button class="btn btn-primary btn-sm" data-action="quiet-open">Start quiet mode</button>`}
         </div>
       </section>`;
+  }
+
+  // ===== Study planner ======================================================
+  async function loadStudy() {
+    try {
+      state.study = await api('/api/study');
+      if (state.view === 'study' && !document.activeElement.matches('input, textarea, select')) renderView();
+    } catch (e) { /* shows the offline state */ }
+  }
+
+  async function studyCall(path, opts, msg) {
+    try {
+      state.study = await api(path, opts);
+      renderView();
+      if (msg) toast(msg);
+      loadLive();
+    } catch (e) { toast(`Couldn't update the plan: ${e.message}`); }
+  }
+
+  const fmtMinsLong = (m) => (m >= 60 ? `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ''}` : `${m}m`);
+  const daysUntil = (iso) => Math.round((new Date(`${iso}T00:00`) - new Date(`${localDate()}T00:00`)) / 86400000);
+
+  function sessionRow(s) {
+    return `
+      <li class="st-session ${s.done ? 'is-done' : ''} ${s.kind === 'revision' ? 'is-revision' : ''}">
+        <button class="dl-check" role="checkbox" aria-checked="${s.done}" data-action="study-done" data-id="${s.id}" aria-label="${s.done ? 'Not done' : 'Done'}: ${esc(s.subject)}, ${esc(s.topic)}">${s.done ? icon('check') : ''}</button>
+        <span class="st-subject">${esc(s.subject)}</span>
+        <span class="st-topic">${esc(s.topic)}</span>
+        <span class="st-mins">${fmtMinsLong(s.minutes)}</span>
+      </li>`;
+  }
+
+  function viewStudy() {
+    if (!state.live) return `<div class="page">${emptyState('book', 'The study planner needs the Aide server', 'Start Aide with start.cmd, then open Study again.')}</div>`;
+    const s = state.study;
+    if (!s) return `<div class="page"><p class="page-sub">Loading your plan…</p></div>`;
+    const today = localDate();
+    const upcoming = s.sessions.filter((x) => x.day > today);
+    const days = [...new Set(upcoming.map((x) => x.day))].slice(0, 14);
+    const daily = s.settings.dailyMinutes;
+    const subjectStats = (sub) => {
+      const mine = s.sessions.filter((x) => x.subjectId === sub.id && x.kind === 'study');
+      const done = mine.filter((x) => x.done).length;
+      return { done, total: mine.length };
+    };
+    return `
+      <div class="page study-page">
+        <p class="page-sub">Add each exam and its topics. ${esc(M.agent.name)} spreads them over the days before, keeps the day before each exam for full revision, and moves anything you miss forward.</p>
+        ${s.suggestions.length ? `
+          <div class="card st-suggest">${icon('sparkle')}<span>Exams found in your messages:</span>
+            ${s.suggestions.map((x) => `<button class="chip pressable" data-action="study-suggest" data-title="${esc(x.title)}" data-date="${esc(x.dueDate)}">${icon('plus')}${esc(x.title.slice(0, 40))} · ${esc(fmtDay(x.dueDate))}</button>`).join('')}
+          </div>` : ''}
+
+
+        ${s.warnings.map((w) => `<div class="chk warn">${icon('alert')}<span>${esc(w)}</span></div>`).join('')}
+
+        ${s.subjects.length ? `
+          <section class="card st-today" aria-labelledby="st-today-h">
+            <div class="chart-head"><h3 id="st-today-h">Today</h3><span class="muted">${fmtMinsLong(s.today.filter((x) => !x.done).reduce((n, x) => n + x.minutes, 0))} left</span></div>
+            ${s.today.length ? `<ul class="st-list">${s.today.map(sessionRow).join('')}</ul>` : `<p class="muted">Nothing planned today. Rest, or add a subject.</p>`}
+          </section>
+
+          ${days.length ? `
+            <section class="section" aria-labelledby="st-next-h">
+              <div class="section-head"><h2 id="st-next-h">Coming up</h2></div>
+              ${days.map((d) => `
+                <div class="st-day">
+                  <div class="st-day-label">${esc(d === addDays(1) ? 'Tomorrow' : fmtDay(d))}</div>
+                  <ul class="st-list">${upcoming.filter((x) => x.day === d).map(sessionRow).join('')}</ul>
+                </div>`).join('')}
+            </section>` : ''}
+
+          <section class="section" aria-labelledby="st-subj-h">
+            <div class="section-head"><h2 id="st-subj-h">Subjects</h2></div>
+            <div class="list">
+              ${s.subjects.map((sub) => {
+                const st = subjectStats(sub);
+                const left = daysUntil(sub.examDate);
+                return `
+                  <div class="row">
+                    <span class="bi-icon k-exam">${icon('book')}</span>
+                    <div class="row-main">
+                      <div class="row-title">${esc(sub.name)}</div>
+                      <div class="row-sub">Exam ${esc(fmtDay(sub.examDate))} · ${left > 0 ? `in ${left} day${left === 1 ? '' : 's'}` : left === 0 ? 'today' : 'done'} · ${sub.topics.length || 4} topics · ${st.done}/${st.total} sessions done</div>
+                      <div class="st-progress" role="progressbar" aria-valuemin="0" aria-valuemax="${st.total}" aria-valuenow="${st.done}"><i style="width:${st.total ? Math.round((st.done / st.total) * 100) : 0}%"></i></div>
+                    </div>
+                    <button class="icon-btn sm" data-action="study-delete" data-id="${sub.id}" aria-label="Remove ${esc(sub.name)}">${icon('trash')}</button>
+                  </div>`;
+              }).join('')}
+            </div>
+          </section>`
+        : emptyState('book', 'No exams in the plan yet', 'Add one below. You can speak the topics too.')}
+
+        <details class="card st-add" ${s.subjects.length ? '' : 'open'}>
+          <summary>${icon('plus')}Add an exam</summary>
+        <form class="st-form" data-form="study-subject">
+          <div class="st-form-row">
+            <label class="field grow"><span class="field-label">Subject</span>
+              <div class="with-mic"><input class="input" id="st-name" name="name" maxlength="80" placeholder="e.g. DBMS" required autocomplete="off" />${micButton('#st-name')}</div></label>
+            <label class="field"><span class="field-label">Exam date</span>
+              <input class="input" type="date" name="examDate" min="${addDays(1)}" value="${addDays(7)}" required /></label>
+          </div>
+          <label class="field"><span class="field-label">Topics (one per line or comma-separated; leave empty and ${esc(M.agent.name)} splits it into 4 parts)</span>
+            <div class="with-mic"><textarea class="input" id="st-topics" name="topics" rows="3" placeholder="ER model, SQL joins, Normalization, Transactions, Indexing"></textarea>${micButton('#st-topics', 'Say the topics')}</div></label>
+          <div class="st-form-row">
+            <label class="field"><span class="field-label">Time per topic</span>
+              <select class="select" name="minutesPerTopic">${[30, 45, 60, 90, 120].map((m) => `<option value="${m}" ${m === 60 ? 'selected' : ''}>${fmtMinsLong(m)}</option>`).join('')}</select></label>
+            <span class="spacer"></span>
+            <button class="btn btn-primary" type="submit">${icon('plus')}Add to plan</button>
+          </div>
+        </form>
+        </details>
+
+        <div class="st-daily">
+          <label for="study-daily">Study time per day</label>
+          <select class="select" id="study-daily">${[60, 90, 120, 180, 240, 300, 360, 480].map((m) => `<option value="${m}" ${m === daily ? 'selected' : ''}>${fmtMinsLong(m)}</option>`).join('')}</select>
+          ${s.subjects.length ? `<button class="btn btn-ghost btn-sm" data-action="study-replan">${icon('undo')}Replan</button>` : ''}
+        </div>
+      </div>`;
+  }
+
+  // ===== People =============================================================
+  async function loadPeople() {
+    try {
+      state.people = await api('/api/people');
+      if (state.view === 'people' && !document.activeElement.matches('input, textarea')) renderView();
+    } catch (e) { /* offline */ }
+  }
+
+  function viewPeople() {
+    if (!state.live) return `<div class="page">${emptyState('people', 'People needs the Aide server', 'Start Aide with start.cmd, then open People again.')}</div>`;
+    if (!state.people) return `<div class="page"><p class="page-sub">Loading…</p></div>`;
+    const f = (state.peopleFilter || '').toLowerCase();
+    const list = state.people.filter((p) => !f || p.name.toLowerCase().includes(f) || p.notes.toLowerCase().includes(f));
+    return `
+      <div class="page">
+        <p class="page-sub">Notes about the people who message you. ${esc(M.agent.name)} reads them every time it drafts a reply to that person, like "Prefers formal emails" or "My roommate, keep it casual".</p>
+        <div class="toolbar">
+          <div class="with-mic grow"><input class="input" id="people-filter" placeholder="Find someone" value="${esc(state.peopleFilter || '')}" autocomplete="off" aria-label="Find someone" />${micButton('#people-filter')}</div>
+        </div>
+        ${list.length ? `
+          <div class="list people-list">
+            ${list.map((p, i) => `
+              <div class="row person-row">
+                <div class="avatar" aria-hidden="true">${esc(initials(p.name))}</div>
+                <div class="row-main">
+                  <div class="row-title">${esc(p.name)}</div>
+                  <div class="row-sub">${p.messages ? `${p.messages} message${p.messages === 1 ? '' : 's'}` : 'Added by you'}${p.channels.length ? ` · ${p.channels.map((c) => esc((M.channels[c] || { label: c }).label)).join(', ')}` : ''}</div>
+                  <div class="with-mic">
+                    <textarea class="input person-notes" id="pn-${i}" rows="2" maxlength="1000" data-person="${esc(p.name)}" placeholder="Notes for ${esc(M.agent.name)}, e.g. teaches DBMS, prefers formal emails">${esc(p.notes)}</textarea>
+                    ${micButton(`#pn-${i}`)}
+                  </div>
+                </div>
+              </div>`).join('')}
+          </div>` : emptyState('people', f ? 'Nobody matches' : 'No one yet', 'People show up here once they message you. You can also add someone below.')}
+        <form class="card add-person" data-form="person">
+          <input class="input" name="name" maxlength="200" placeholder="Name, exactly as it appears in messages" required autocomplete="off" />
+          <input class="input grow" name="notes" maxlength="1000" placeholder="Notes" required autocomplete="off" />
+          <button class="btn btn-secondary" type="submit">${icon('plus')}Add</button>
+        </form>
+      </div>`;
+  }
+
+  // ===== Search =============================================================
+  let searchTimer = null;
+
+  function openSearch() {
+    openSheet(`
+      <h2 class="sheet-title" id="sheet-title">Search</h2>
+      <div class="with-mic">
+        <input id="search-input" class="input search-input" placeholder="Messages, replies, deadlines, food, people, subjects…" autocomplete="off" aria-label="Search" />
+        ${micButton('#search-input', 'Search by voice')}
+      </div>
+      <div id="search-results" class="search-results" aria-live="polite"><p class="sheet-sub">Type at least 2 letters.</p></div>`,
+    { focus: '#search-input', onClose: stopMic });
+  }
+
+  async function runSearch(q) {
+    const box = $('#search-results');
+    if (!box) return;
+    if (q.trim().length < 2) { box.innerHTML = '<p class="sheet-sub">Type at least 2 letters.</p>'; return; }
+    if (!state.live) { box.innerHTML = '<p class="sheet-sub">Search needs the Aide server.</p>'; return; }
+    try {
+      const r = await api(`/api/search?q=${encodeURIComponent(q.trim())}`);
+      if ($('#search-input') && $('#search-input').value.trim() !== q.trim()) return; // a newer search is coming
+      const item = (view, title, sub, ic) => `<button class="search-item" data-action="search-go" data-view="${view}">${icon(ic)}<span><b>${esc(title)}</b><small>${esc(sub)}</small></span></button>`;
+      const groups = [
+        ['Messages', r.messages.map((m) => item(m.status === 'pending' ? 'approvals' : 'activity', `${m.from}: ${m.text.slice(0, 80)}`, `${(M.channels[m.channel] || { label: m.channel }).label} · ${fmtWhen(m.at)} · ${m.status === 'pending' ? 'waiting for you' : m.status}`, 'chat'))],
+        ['Deadlines', r.deadlines.map((d) => item('tasks', d.title, `${KIND_NAME[d.kind] || 'Task'} · ${fmtDay(d.dueDate)}${d.done ? ' · done' : ''}`, DL_ICON[d.kind] || 'clock'))],
+        ['Study', r.study.map((s) => item('study', s.name, `Exam ${fmtDay(s.examDate)}`, 'book'))],
+        ['People', r.people.map((p) => item('people', p.name, p.notes.slice(0, 80), 'people'))],
+        ['Food', r.food.map((f) => item('food', f.request.slice(0, 80), `${f.restaurant || 'Any restaurant'} · ${f.status}`, 'food'))],
+      ].filter((g) => g[1].length);
+      box.innerHTML = groups.length
+        ? groups.map(([label, items]) => `<div class="search-group"><div class="brief-label">${label}</div>${items.join('')}</div>`).join('')
+        : `<p class="sheet-sub">Nothing found for "${esc(q)}".</p>`;
+    } catch (e) { box.innerHTML = `<p class="sheet-sub">Search failed: ${esc(e.message)}</p>`; }
+  }
+
+  // ===== Remind me later ====================================================
+  function snoozeOptions() {
+    const now = new Date();
+    const at = (d, h, m = 0) => { const x = new Date(d); x.setHours(h, m, 0, 0); return x; };
+    const [bh, bm] = state.notify.briefTime.split(':').map(Number);
+    const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+    const opts = [['In 1 hour', new Date(now.getTime() + 3600e3)]];
+    if (now.getHours() < 18) opts.push(['This evening', at(now, 19)]);
+    opts.push(['Tomorrow morning', at(tomorrow, bh, bm)]);
+    const exams = (state.deadlines || []).filter((d) => d.kind === 'exam' && !d.done && d.dueDate >= localDate())
+      .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+    if (exams.length) {
+      const after = new Date(`${exams[0].dueDate}T00:00`); after.setDate(after.getDate() + 1); after.setHours(bh, bm, 0, 0);
+      opts.push([`After your exam (${fmtDay(exams[0].dueDate)})`, after]);
+    }
+    const later = new Date(); later.setDate(later.getDate() + 3);
+    opts.push(['In 3 days', at(later, bh, bm)]);
+    return opts;
+  }
+
+  function openSnooze(id) {
+    const a = state.approvals.find((x) => x.id === String(id));
+    if (!a) return;
+    openSheet(`
+      <h2 class="sheet-title" id="sheet-title">Remind me later</h2>
+      <p class="sheet-sub">The reply to ${esc(a.from)} leaves your queue and comes back at the top when it's time.</p>
+      <div class="more-grid">
+        ${snoozeOptions().map(([label, when]) => `
+          <button class="more-tile pressable" data-action="snooze-pick" data-id="${a.id}" data-until="${when.toISOString()}">
+            <span class="more-icon">${icon('clock')}</span><span class="more-label">${esc(label)}</span>
+            <span class="more-sub">${esc(when.toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }))}</span>
+          </button>`).join('')}
+      </div>`);
+  }
+
+  async function loadSnoozed() {
+    try {
+      state.snoozed = (await api('/api/approvals/snoozed')).map(fromServer);
+      if (state.view === 'approvals' && !document.activeElement.matches('textarea')) renderView();
+    } catch (e) { /* ignore */ }
+  }
+
+  function snoozedSection() {
+    const list = state.snoozed || [];
+    if (!list.length) return '';
+    return `
+      <details class="snoozed card">
+        <summary>${icon('clock')}${list.length} snoozed</summary>
+        <div class="list">
+          ${list.map((a) => `
+            <div class="row">
+              <div class="row-main">
+                <div class="row-title">${esc(a.from)}: ${esc(a.original.slice(0, 70))}</div>
+                <div class="row-sub">Back ${esc(new Date(a.snoozeUntil).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }))}</div>
+              </div>
+              <button class="btn btn-ghost btn-sm" data-action="unsnooze" data-id="${a.id}">Bring back</button>
+            </div>`).join('')}
+        </div>
+      </details>`;
+  }
+
+  // ===== Settings: voice, auto-send, backup =================================
+  function moreSettingsSections() {
+    const v = voiceLang();
+    const voice = `
+      <section class="section" aria-labelledby="s-voice">
+        <div class="section-head"><h2 id="s-voice">Voice</h2><p>Tap a ${icon('mic')} mic to speak instead of typing: chat, food orders, search, study topics, deadlines and notes.</p></div>
+        <div class="card notif-status">
+          ${voiceSupported()
+            ? `<label for="voice-lang">Language I speak</label><span class="spacer"></span>
+               <select class="select" id="voice-lang">${VOICE_LANGS.map(([code, label]) => `<option value="${code}" ${code === v ? 'selected' : ''}>${label}</option>`).join('')}</select>`
+            : `<span>${icon('info')}This browser can't do voice input. Chrome or Edge can.</span>`}
+        </div>
+      </section>`;
+    if (!state.lan) return voice; // auto-send and backup are only on the computer running Aide
+    const a = state.autosend || { enabled: false, dailyCap: 10, sentToday: 0 };
+    return `${voice}
+      <section class="section" aria-labelledby="s-auto">
+        <div class="section-head"><h2 id="s-auto">Auto-send safe replies</h2>
+          <p>When on, ${esc(M.agent.name)} sends only the safest replies by itself: "Auto-handle" ones it's highly confident about, to people you've already replied to yourself. Never money, deadlines, emotions, urgent messages or strangers. Each still has a 60-second undo and shows up in Activity.</p></div>
+        <div class="list">
+          <div class="row">
+            <div class="row-main"><div class="row-title" id="as-l">Auto-send</div><div class="row-sub">${a.enabled ? `On · ${a.sentToday} sent today` : 'Off. Everything waits for your OK.'}</div></div>
+            <button class="switch" role="switch" aria-checked="${a.enabled}" aria-labelledby="as-l" data-action="autosend-toggle"></button>
+          </div>
+          <div class="row">
+            <div class="row-main"><div class="row-title"><label for="autosend-cap">Daily limit</label></div><div class="row-sub">After this many, the rest wait for you.</div></div>
+            <select class="select" id="autosend-cap">${[3, 5, 10, 20].map((n) => `<option value="${n}" ${n === a.dailyCap ? 'selected' : ''}>${n} a day</option>`).join('')}</select>
+          </div>
+        </div>
+      </section>
+      <section class="section" aria-labelledby="s-backup">
+        <div class="section-head"><h2 id="s-backup">Backup</h2><p>One file with all your messages, replies, deadlines, study plan, notes and settings. Keep it somewhere safe; it's private.</p></div>
+        <div class="card notif-status">
+          <a class="btn btn-primary btn-sm" href="${API_BASE}/api/backup" download>${icon('download')}Download backup</a>
+          <label class="btn btn-ghost btn-sm">${icon('upload')}Restore from a file…<input type="file" id="restore-file" accept=".json,application/json" hidden /></label>
+        </div>
+      </section>`;
+  }
+
+  async function restoreFrom(file) {
+    let data;
+    try { data = JSON.parse(await file.text()); } catch (e) { toast("That file isn't an Aide backup"); return; }
+    if (!data || data.app !== 'aide') { toast("That file isn't an Aide backup"); return; }
+    const when = data.exportedAt ? new Date(data.exportedAt).toLocaleString() : 'unknown date';
+    const n = (data.tables && data.tables.messages || []).length;
+    openSheet(`
+      <h2 class="sheet-title" id="sheet-title">Restore this backup?</h2>
+      <p class="sheet-sub">From ${esc(when)}, with ${n} message${n === 1 ? '' : 's'}. This <b>replaces all your current data</b> in ${esc(M.agent.name)}. A safety copy of what's there now is saved first (in aide-backend\\backups).</p>
+      <div class="capture-actions">
+        <button type="button" class="btn btn-ghost" data-action="sheet-close">Cancel</button>
+        <button type="button" class="btn btn-danger" data-action="restore-confirm">Yes, replace my data</button>
+      </div>`);
+    state.pendingRestore = data;
   }
 
   // ===== Phone pairing, phone access, weekly recap ==========================
@@ -1585,7 +1928,7 @@
 
         <form class="card food-plan" data-form="food-plan">
           <label class="field-label" for="food-text">What do you want to eat?</label>
-          <textarea id="food-text" class="input food-input" rows="2" maxlength="1000" placeholder="e.g. 2 paneer butter masala and 3 butter naan from Punjabi Rasoi under 600, less spicy"></textarea>
+          <div class="with-mic"><textarea id="food-text" class="input food-input" rows="2" maxlength="1000" placeholder="e.g. 2 paneer butter masala and 3 butter naan from Punjabi Rasoi under 600, less spicy"></textarea>${micButton('#food-text', 'Say your order')}</div>
           ${f.profile.favorites.length ? `<div class="chips food-favs" aria-label="Favourites">${f.profile.favorites.map((x) => `<button type="button" class="chip" data-action="food-fav" data-text="${esc(x)}">${icon('plus')}${esc(x)}</button>`).join('')}</div>` : ''}
           <div class="food-plan-row">
             <div class="segmented" role="radiogroup" aria-label="Order from">
@@ -1621,7 +1964,7 @@
   function settingsLiveSections() {
     const p = state.profile;
     if (!p) return '';
-    const alerts = (state.brief ? notificationsSection() : '') + phoneSection();
+    const alerts = (state.brief ? notificationsSection() : '') + moreSettingsSections() + phoneSection();
     const confirm = (k) => p.needsConfirming.includes(k) ? '<span class="pill s-flagged">Please confirm</span>' : '';
     const learned = state.learned || [];
     return `
@@ -1716,7 +2059,7 @@
   }
 
   // ===== Render =============================================================
-  const VIEW_FNS = { home: viewHome, chat: viewChat, apps: viewApps, app: viewApp, approvals: viewApprovals, activity: viewActivity, food: viewFood, tasks: viewTasks, rules: viewRules, settings: viewSettings };
+  const VIEW_FNS = { home: viewHome, chat: viewChat, apps: viewApps, app: viewApp, approvals: viewApprovals, activity: viewActivity, food: viewFood, study: viewStudy, people: viewPeople, tasks: viewTasks, rules: viewRules, settings: viewSettings };
 
   // ===== Motion =============================================================
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -1808,6 +2151,9 @@
     if (state.live && ['activity', 'rules', 'settings'].includes(view)) loadExtras();
     if (state.live && view === 'food') loadFood();
     if (state.live && view === 'tasks') loadDeadlines();
+    if (state.live && view === 'study') loadStudy();
+    if (state.live && view === 'people') loadPeople();
+    if (state.live && view === 'approvals') loadSnoozed();
   }
 
   // ===== Sheets (More menu, quick capture) ==================================
@@ -1838,11 +2184,13 @@
   }
 
   function openMore() {
-    const L = { food: 'Food', apps: 'Apps', tasks: 'Tasks', rules: 'Rules', settings: 'Settings' };
+    const L = { study: 'Study', people: 'People', food: 'Food', apps: 'Apps', tasks: 'Tasks', rules: 'Rules', settings: 'Settings' };
     const sub = {
       food: (() => { const n = (state.food.orders || []).filter((o) => o.status === 'planned' || o.status === 'approved').length; return n ? `${n} cart${n > 1 ? 's' : ''} open` : 'Plan an order'; })(),
+      study: state.study && state.study.today.length ? `${state.study.today.filter((x) => !x.done).length} sessions today` : 'Exam revision plan',
+      people: 'Notes for replies',
       apps: `${appList().filter((a) => a.connected).length} connected`,
-      tasks: `${state.tasks.filter((t) => t.status !== 'done').length} active`,
+      tasks: state.deadlines ? `${state.deadlines.filter((d) => !d.done).length} deadlines` : `${state.tasks.filter((t) => t.status !== 'done').length} active`,
       rules: `${Object.values(state.rules).reduce((n, l) => n + l.length, 0)} rules`,
       settings: 'Accounts, tone, limits',
     };
@@ -1873,10 +2221,10 @@
   function openCapture() {
     openSheet(`
       <h2 class="sheet-title" id="sheet-title">Tell ${esc(M.agent.name)} something</h2>
-      <p class="sheet-sub">A reminder, a preference, or something to handle later.</p>
+      <p class="sheet-sub">Type or tap Speak. "Order 2 masala dosa from MTR" plans a food cart, "DBMS exam on 12th at 10 AM" adds a deadline, anything else becomes a note.</p>
       <form class="capture" data-form="capture">
         <label class="sr-only" for="capture-input">Message</label>
-        <textarea id="capture-input" class="capture-input" rows="3" placeholder="e.g. Remind me to call Mom at 7"></textarea>
+        <textarea id="capture-input" class="capture-input" rows="3" placeholder="e.g. Order 2 masala dosa from MTR"></textarea>
         <div class="capture-actions">
           <button type="button" class="mic-btn" data-action="mic" aria-pressed="false">${icon('mic')}<span class="mic-label">Speak</span></button>
           <button type="submit" class="btn btn-primary">${icon('send')}Send</button>
@@ -1937,27 +2285,46 @@
     }
   }
 
-  function toggleMic(btn) {
+  // ----- Voice input ---------------------------------------------------------
+  // Any text box can have a mic: micButton('#id'). Uses the browser's speech recognition
+  // (Chrome / Edge / Safari); the language is set in Settings → Voice.
+  const VOICE_LANGS = [['en-IN', 'English (India)'], ['hi-IN', 'Hindi'], ['te-IN', 'Telugu'], ['ta-IN', 'Tamil'],
+    ['kn-IN', 'Kannada'], ['ml-IN', 'Malayalam'], ['mr-IN', 'Marathi'], ['bn-IN', 'Bengali'], ['en-US', 'English (US)'], ['en-GB', 'English (UK)']];
+  const voiceSupported = () => !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+  const voiceLang = () => store.get('voiceLang', (navigator.language || 'en-IN').startsWith('en') ? 'en-IN' : navigator.language);
+  const micButton = (target, label = 'Speak instead of typing') => voiceSupported()
+    ? `<button type="button" class="mic-inline" data-action="voice" data-target="${target}" aria-pressed="false" aria-label="${esc(label)}" title="${esc(label)}">${icon('mic')}</button>`
+    : '';
+
+  function toggleMic(btn, input = $(btn.dataset.target || '#capture-input')) {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { toast("Voice input isn't supported in this browser"); return; }
+    if (!SR) { toast("Voice input isn't supported in this browser. Try Chrome or Edge."); return; }
     if (recognition) { stopMic(); return; }
-    const input = $('#capture-input');
+    if (!input) return;
     const base = input.value ? input.value.trimEnd() + ' ' : '';
+    const label = btn.querySelector('.mic-label');
     recognition = new SR();
-    recognition.lang = navigator.language || 'en-US';
+    recognition.lang = voiceLang();
     recognition.interimResults = true;
-    recognition.onresult = (e) => { input.value = base + [...e.results].map((r) => r[0].transcript).join(''); };
-    recognition.onerror = (e) => { if (e.error !== 'aborted') toast("Couldn't hear that. Try again."); };
+    recognition.onresult = (e) => {
+      input.value = base + [...e.results].map((r) => r[0].transcript).join('');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    recognition.onerror = (e) => {
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') toast('Microphone access is blocked. Allow it in your browser\'s site settings.');
+      else if (e.error !== 'aborted' && e.error !== 'no-speech') toast("Couldn't hear that. Try again.");
+    };
     recognition.onend = () => {
       recognition = null;
-      btn.classList.remove('listening');
-      btn.setAttribute('aria-pressed', 'false');
-      btn.querySelector('.mic-label').textContent = 'Speak';
+      document.querySelectorAll('.listening').forEach((b) => { b.classList.remove('listening'); b.setAttribute('aria-pressed', 'false'); });
+      if (label) label.textContent = 'Speak';
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      input.focus();
     };
     recognition.start();
     btn.classList.add('listening');
     btn.setAttribute('aria-pressed', 'true');
-    btn.querySelector('.mic-label').textContent = 'Listening…';
+    if (label) label.textContent = 'Listening…';
   }
 
   // ===== Toasts =============================================================
@@ -1987,6 +2354,8 @@
       { label: `Switch to ${isDark() ? 'light' : 'dark'} mode`, icon: isDark() ? 'sun' : 'moon', run: toggleTheme },
       { label: `Tell ${M.agent.name} something`, icon: 'mic', run: openCapture },
       { label: 'Paste a message', icon: 'inbox', run: openPaste },
+      { label: 'Search', icon: 'search', run: openSearch },
+      { label: 'Study plan', icon: 'book', run: () => go('study') },
       { label: 'Order food', icon: 'food', run: () => { go('food'); const f = $('#food-text'); if (f) f.focus(); } },
       { label: 'Add a task', icon: 'plus', run: () => { go('tasks'); $('#task-title').focus(); } },
       { label: 'Add a rule', icon: 'rules', run: () => { go('rules'); $('#add-auto').focus(); } },
@@ -2058,6 +2427,7 @@
     },
     capture: () => openCapture(),
     mic: (el) => toggleMic(el),
+    voice: (el) => toggleMic(el),
     suggest: (el) => { go('chat'); sendChat(el.dataset.text); },
     'feed-edit': (el) => { state.editingDraft = el.dataset.id; refreshChatLog(true); },
     'feed-edit-done': () => { state.editingDraft = null; refreshChatLog(true); toast('Draft updated'); },
@@ -2123,6 +2493,65 @@
       const [removed] = state.tasks.splice(idx, 1); // TODO(api): DELETE /api/tasks/:id
       renderView();
       toast('Task removed', { action: 'Undo', onAction: () => { state.tasks.splice(idx, 0, removed); renderView(); } });
+    },
+
+    // ----- study, people, search, snooze, auto-send, backup ------------------------
+    'study-done': (el) => {
+      const sess = state.study && state.study.sessions.concat(state.study.today).find((x) => String(x.id) === el.dataset.id);
+      studyCall(`/api/study/sessions/${el.dataset.id}`, { method: 'PATCH', body: { done: !(sess && sess.done) } },
+        sess && !sess.done ? `Done: ${sess.subject}, ${sess.topic}. Nice!` : null);
+    },
+    'study-delete': (el) => studyCall(`/api/study/subjects/${el.dataset.id}`, { method: 'DELETE' }, 'Removed from the plan'),
+    'study-replan': () => studyCall('/api/study/replan', { method: 'POST' }, 'Plan rebuilt. Missed sessions moved forward.'),
+    'study-suggest': (el) => {
+      const det = $('.st-add');
+      if (det) det.open = true;
+      const f = $('[data-form="study-subject"]');
+      f.elements.name.value = el.dataset.title.replace(/^(reminder:\s*)/i, '').split(/\s+(exam|viva|test|quiz|mid-?sem|end-?sem)\b/i)[0].slice(0, 80) || el.dataset.title.slice(0, 80);
+      f.elements.examDate.value = el.dataset.date;
+      $('#st-topics').focus();
+      toast('Add the topics (or leave them empty), then tap "Add to plan"');
+    },
+    'search-open': () => openSearch(),
+    'search-go': (el) => { closeSheet(); go(el.dataset.view); },
+    'snooze-open': (el) => openSnooze(el.dataset.id),
+    'snooze-pick': async (el) => {
+      closeSheet();
+      try {
+        const a = await api(`/api/approvals/${el.dataset.id}/snooze`, { method: 'POST', body: { until: el.dataset.until } });
+        state.approvals = state.approvals.filter((x) => x.id !== String(a.id));
+        state.snoozed = [...(state.snoozed || []), fromServer(a)];
+        renderAll();
+        toast(`Got it. ${a.from} will be back ${new Date(a.snoozeUntil).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}.`,
+          { action: 'Undo', onAction: () => ACTIONS.unsnooze({ dataset: { id: String(a.id) } }) });
+        loadLive();
+      } catch (e) { toast(`Couldn't snooze it: ${e.message}`); }
+    },
+    unsnooze: async (el) => {
+      try {
+        await api(`/api/approvals/${el.dataset.id}/unsnooze`, { method: 'POST' });
+        state.snoozed = (state.snoozed || []).filter((x) => x.id !== String(el.dataset.id));
+        await loadLive();
+        renderAll();
+      } catch (e) { toast(`Couldn't bring it back: ${e.message}`); }
+    },
+    'autosend-toggle': async () => {
+      try {
+        state.autosend = await api('/api/autosend', { method: 'PUT', body: { enabled: !(state.autosend && state.autosend.enabled) } });
+        renderView();
+        toast(state.autosend.enabled ? 'Auto-send on for the safest replies. Everything else still waits for you.' : 'Auto-send off. Everything waits for your OK.');
+      } catch (e) { toast(`Couldn't change it: ${e.message}`); }
+    },
+    'restore-confirm': async () => {
+      const data = state.pendingRestore;
+      closeSheet();
+      if (!data) return;
+      try {
+        const r = await api('/api/backup/restore', { method: 'POST', body: data, timeout: 60000 });
+        toast(`Restored. Safety copy saved as ${r.safetyCopy}. Reloading…`);
+        setTimeout(() => location.reload(), 1500);
+      } catch (e) { toast(e.message); }
+      state.pendingRestore = null;
     },
 
     // ----- phone access ----------------------------------------------------------
@@ -2311,12 +2740,25 @@
       const text = $('#capture-input').value.trim();
       if (!text) { $('#capture-input').focus(); return; }
       stopMic();
-      // TODO(api): POST /api/capture { text } (reminders, preferences, to-dos)
-      state.messages.push({ id: uid(), role: 'user', day: 'Today', text, time: nowTime() });
-      state.messages.push({ id: uid(), role: 'agent', day: 'Today', text: "Got it. I'll take care of that and let you know if I need anything.", time: nowTime() });
+      const asNote = () => {
+        state.messages.push({ id: uid(), role: 'user', day: 'Today', text, time: nowTime() });
+        state.messages.push({ id: uid(), role: 'agent', day: 'Today', text: "Got it. I'll take care of that and let you know if I need anything.", time: nowTime() });
+        if (state.view === 'chat') refreshChatLog();
+        toast(`Sent to ${M.agent.name}`, { action: 'View', onAction: () => go('chat') });
+      };
       closeSheet();
-      if (state.view === 'chat') refreshChatLog();
-      toast(`Sent to ${M.agent.name}`, { action: 'View', onAction: () => go('chat') });
+      if (!state.live) { asNote(); return; }
+      // The server decides: food order, deadline, or a plain note.
+      api('/api/capture', { method: 'POST', body: { text } }).then((r) => {
+        if (r.kind === 'food') {
+          replaceOrder(r.order);
+          toast(`Planned a ${r.order.appLabel} cart: ${r.order.items.map((i) => `${i.qty}× ${i.name}`).join(', ')}`, { action: 'Review', onAction: () => go('food') });
+        } else if (r.kind === 'deadline') {
+          if (state.deadlines) state.deadlines.push(r.deadline);
+          toast(`Added: ${r.deadline.title} (${dlWhen(r.deadline)})`, { action: 'View', onAction: () => go('tasks') });
+          loadLive();
+        } else asNote();
+      }).catch(asNote);
     }
 
     if (kind === 'paste') submitPaste(form);
@@ -2329,6 +2771,22 @@
       renderView();
       $('#task-title').focus();
       toast('Task added');
+    }
+
+    if (kind === 'study-subject') {
+      const el = form.elements;
+      const topics = el.topics.value.split(/[\n,;]+/).map((t) => t.trim()).filter(Boolean);
+      studyCall('/api/study/subjects', { method: 'POST', body: {
+        name: el.name.value.trim(), examDate: el.examDate.value, topics, minutesPerTopic: Number(el.minutesPerTopic.value),
+      } }, `Added ${el.name.value.trim()} to your plan`);
+    }
+
+    if (kind === 'person') {
+      const el = form.elements;
+      const name = el.name.value.trim();
+      api(`/api/people/${encodeURIComponent(name)}`, { method: 'PUT', body: { notes: el.notes.value.trim() } })
+        .then(() => { toast(`Saved notes for ${name}`); loadPeople(); })
+        .catch((err) => toast(`Couldn't save: ${err.message}`));
     }
 
     if (kind === 'pair') {
@@ -2344,7 +2802,7 @@
       const body = { title: el.title.value.trim(), kind: el.kind.value, dueDate: el.dueDate.value, dueTime: el.dueTime.value || null };
       if (!body.title || !body.dueDate) return;
       api('/api/deadlines', { method: 'POST', body })
-        .then((d) => { state.deadlines = [...(state.deadlines || []), d]; renderView(); toast(`Added: ${d.title} (${dlWhen(d)})`); loadLive(); const t = $('.dl-title'); if (t) t.focus(); })
+        .then((d) => { state.deadlines = [...(state.deadlines || []), d]; renderView(); toast(`Added: ${d.title} (${dlWhen(d)})`); loadLive(); const t = $('#dl-title'); if (t) t.focus(); })
         .catch((err) => toast(`Couldn't add it: ${err.message}`));
     }
 
@@ -2417,6 +2875,14 @@
     if (t.dataset.input === 'draft') { const a = state.approvals.find((x) => x.id === t.dataset.id); if (a) a.draft = t.value; }
     if (t.dataset.input === 'limit') { state.settings.dailyLimit = +t.value; $('#limit-value').textContent = `${t.value} / day`; }
     if (t.id === 'palette-input') { palette.index = 0; renderPalette(); }
+    if (t.id === 'search-input') { clearTimeout(searchTimer); searchTimer = setTimeout(() => runSearch(t.value), 250); }
+    if (t.id === 'people-filter') {
+      state.peopleFilter = t.value;
+      const pos = t.selectionStart;
+      renderView();
+      const f = $('#people-filter');
+      if (f) { f.focus(); f.setSelectionRange(pos, pos); }
+    }
   });
 
   document.addEventListener('change', (e) => {
@@ -2429,6 +2895,25 @@
   // Food cart fields save when you leave them (change fires on blur / Enter).
   document.addEventListener('change', (e) => {
     const t = e.target;
+    if (t.id === 'study-daily') {
+      studyCall('/api/study/settings', { method: 'PUT', body: { dailyMinutes: Number(t.value) } }, `Plan rebuilt for ${fmtMinsLong(Number(t.value))} a day`);
+      return;
+    }
+    if (t.id === 'voice-lang') { store.set('voiceLang', t.value); toast(`Voice language: ${t.selectedOptions[0].textContent}`); return; }
+    if (t.id === 'autosend-cap') {
+      api('/api/autosend', { method: 'PUT', body: { dailyCap: Number(t.value) } })
+        .then((a) => { state.autosend = a; toast(`Auto-send limit: ${a.dailyCap} a day`); })
+        .catch((err) => toast(`Couldn't change it: ${err.message}`));
+      return;
+    }
+    if (t.id === 'restore-file' && t.files && t.files[0]) { restoreFrom(t.files[0]); t.value = ''; return; }
+    if (t.dataset && t.dataset.person !== undefined) {
+      const name = t.dataset.person;
+      api(`/api/people/${encodeURIComponent(name)}`, { method: 'PUT', body: { notes: t.value.trim() } })
+        .then(() => { const p = (state.people || []).find((x) => x.name === name); if (p) p.notes = t.value.trim(); toast(`Saved notes for ${name}`); })
+        .catch((err) => toast(`Couldn't save: ${err.message}`));
+      return;
+    }
     if (t.id === 'brief-time' && /^\d{2}:\d{2}$/.test(t.value)) {
       state.notify.briefTime = t.value;
       saveNotify();
@@ -2596,7 +3081,7 @@
       state.approvals = next;
       state.stats = stats;
       state.live = true;
-      if (!wasLive) { loadExtras(); loadFood(); loadDeadlines(); }
+      if (!wasLive) { loadExtras(); loadFood(); loadDeadlines(); loadStudy(); loadSnoozed(); }
       const wasOffline = state.offline;
       state.offline = false;
       if (render && (changed || statsChanged || wasOffline || (briefChanged && ['home', 'settings'].includes(state.view))) && !focused && !sheet.open) renderAll();
@@ -2637,6 +3122,7 @@
         text: a.status === 'sent' ? `Sent your reply to ${a.from}` : `Skipped the draft for ${a.from}`,
         detail: a.text,
         learned: a.learned,
+        auto: a.auto,
         transport: a.transport,
         undoable: false,
       }));
@@ -2651,6 +3137,7 @@
       // These two are optional: /api/lan answers only on the computer running Aide.
       state.weekly = await api('/api/weekly').catch(() => null);
       state.lan = await api('/api/lan').catch(() => null);
+      state.autosend = state.lan ? await api('/api/autosend').catch(() => null) : null;
       if (['activity', 'rules', 'settings'].includes(state.view) && !document.activeElement.matches('input, textarea')) renderView();
     } catch (e) { /* stay on sample data for these screens */ }
   }

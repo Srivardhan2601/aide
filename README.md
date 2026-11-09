@@ -9,6 +9,9 @@ A personal assistant that drafts replies to your messages in your own voice and 
 - **Food:** plan a Swiggy or Zomato cart in Aide, check it against your diet, budget and
   never-include list, approve it, and Claude places it with the official connector after showing
   you the real cart and getting your "yes, place it".
+- **Study and more:** an exam study planner, "Later" (snooze) on drafts, search, notes about
+  people that shape replies, backup/restore, optional auto-send for simple replies, and voice
+  input almost everywhere.
 - **`aide-backend/`**: FastAPI + SQLite server. It drafts replies with Claude using your style profile and rules, keeps the approval queue, and sends after a 5-second undo window (sending is mocked for now). See [aide-backend/README.md](aide-backend/README.md).
 
 ## Quick start

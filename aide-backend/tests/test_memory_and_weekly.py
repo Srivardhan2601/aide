@@ -23,7 +23,7 @@ class RecordingDrafter:
     def __init__(self):
         self.calls = []
 
-    def draft(self, *, channel, sender, text, tone="default", previous_draft=None, history=None):
+    def draft(self, *, channel, sender, text, tone="default", previous_draft=None, history=None, about=""):
         self.calls.append({"sender": sender, "text": text, "history": history or []})
         return Draft(draft="ok, noted", confidence="high", bucket="auto", reason="test")
 

@@ -25,3 +25,8 @@ Thumbs.db
 
 # Leftovers from an earlier parallel build (unused)
 aide-backend/_from_other_session/
+
+# Backups (they contain all your messages)
+aide-backend/backups/
+*.aide-backup.json
+aide-backup-*.json

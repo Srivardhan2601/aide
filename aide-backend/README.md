@@ -170,6 +170,27 @@ One-time setup in Claude: Settings → Connectors → add Swiggy (`https://mcp.s
 Zomato needs access requested first ([Zomato's connector page](https://github.com/Zomato/mcp-server-manifest)).
 Through these connectors, Swiggy is cash on delivery and orders can't be cancelled; Zomato is paid by QR code.
 
+## Study planner, snooze, search, people, backup, auto-send
+
+- **Study planner** (`app/planner.py`, `/api/study…`): add an exam with its date and topics (or
+  pick one Aide found in your messages). Topics are spread across the days before the exam, with a
+  full revision the day before. Tick sessions off; missed ones move forward when you replan. Set
+  your daily study time in the Study screen.
+- **Snooze** (`POST /api/approvals/{id}/snooze`): "Later" on a draft hides it until the time you
+  pick (in an hour, this evening, tomorrow morning, after your next exam…), then it comes back.
+- **Search** (`GET /api/search?q=`): messages, deadlines, food carts, people and study topics.
+- **People** (`/api/people`): short notes about someone ("my project guide, keep it formal").
+  Claude reads them when drafting replies to that person.
+- **Backup and restore** (`GET /api/backup`, `POST /api/backup/restore`, this computer only): one
+  JSON file with all your data and settings. Phone pairing secrets are never included. A restore
+  saves a safety copy of the current data to `backups/` first and rolls back on any error.
+- **Auto-send** (off by default, this computer only): sends only simple, high-confidence, non-urgent
+  replies to people you've already replied to, up to a daily cap, with the usual undo window.
+- **Voice:** a mic on chat, search, quick capture, food, deadlines, study topics and people notes.
+  Pick the language in Settings → Voice. Quick capture (`POST /api/capture`) routes what you say:
+  "order 2 dosa from MTR" becomes a food cart, "OS lab exam on 20th at 2 pm" becomes a deadline,
+  anything else goes to chat.
+
 ## Still needed from you
 
 1. **5-10 real replies you've sent** → `example_replies` in `config/style_profile.json`.

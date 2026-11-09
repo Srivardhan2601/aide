@@ -68,7 +68,7 @@ def find_date(t: str, today: date) -> tuple[date, re.Match] | None:
     for pat in weekday_patterns:
         for m in re.finditer(pat, t):
             delta = (WEEKDAYS[m.group(2)] - today.weekday()) % 7
-            if m.group(1) == "next" and delta == 0:
+            if delta == 0:  # "by Monday" said on a Monday means next Monday (today would be "today")
                 delta = 7
             add(m, today + timedelta(days=delta))
     for m in re.finditer(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+(?:of\s+)?({MON})\b(?:,?\s+(\d{{4}}))?", t):

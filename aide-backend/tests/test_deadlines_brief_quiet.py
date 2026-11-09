@@ -44,6 +44,12 @@ def test_ignores_non_deadlines(text):
     assert extract(text, NOW) == []
 
 
+def test_same_weekday_means_next_week():
+    # NOW is a Wednesday: "by Wednesday" means next week's, not today.
+    assert one("Submit the report by Wednesday") == ("assignment", "2026-11-11", None)
+    assert one("Submit the report today") == ("assignment", "2026-11-04", None)
+
+
 def test_title_uses_subject_or_first_sentence():
     assert extract("Subject: Thesis draft\n\nPlease submit by Friday", NOW)[0]["title"] == "Thesis draft"
     assert extract("Can you get the report done by Monday? Thanks!", NOW)[0]["title"] == "Can you get the report done by Monday?"

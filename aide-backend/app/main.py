@@ -22,7 +22,7 @@ from .classifier import guess_group
 from .config import BUCKET_LABELS, CHANNELS, MINUTES_PER_REPLY, Settings, load_json, load_profile, load_rules, save_json
 from .db import DB, iso, local_day, parse_iso, streak, utcnow
 from . import deadlines as deadlines_mod
-from . import food, phone
+from . import extras, food, phone
 from . import gmail as gmail_mod
 from .drafter import get_drafter
 from .sender import send_reply
@@ -63,6 +63,19 @@ class RulesIn(BaseModel):
     auto: list[str] = Field(default_factory=list, max_length=30)
     ask: list[str] = Field(default_factory=list, max_length=30)
     never: list[str] = Field(default_factory=list, max_length=30)
+
+
+class SnoozeIn(BaseModel):
+    until: datetime
+
+
+class CaptureIn(BaseModel):
+    text: str = Field(min_length=1, max_length=1000)
+
+
+# "order 2 dosa from MTR", "get me a coffee", "...on swiggy" (but not "in order to submit")
+FOOD_INTENT = re.compile(r"^\s*(?:please\s+)?(?:order|get me)\b|\b(?:swiggy|zomato)\b", re.I)
+FOOD_INTENT_PREFIX = re.compile(r"^\s*(?:please\s+)?(?:order|get me)\s+(?:me\s+)?(?:some\s+)?", re.I)
 
 
 class PairIn(BaseModel):
@@ -145,6 +158,11 @@ def food_profile_json(p: dict) -> dict:
             "preferredApp": p["preferred_app"], "favorites": p["favorites"], "avoid": p["avoid"], "notes": p["notes"]}
 
 
+def fmt_minutes(m: int) -> str:
+    h, mm = divmod(m, 60)
+    return f"{h}h {mm}m" if h and mm else f"{h}h" if h else f"{mm}m"
+
+
 def _norm(s: str | None) -> str:
     return " ".join((s or "").split()).casefold()
 
@@ -186,6 +204,8 @@ def approval_json(r, allow: list[str] | tuple = ()) -> dict:
         "sendAt": r["send_at"],
         "createdAt": r["created_at"],
         "updatedAt": r["updated_at"],
+        "snoozeUntil": r["snooze_until"],
+        "autoSent": bool(r["auto_sent"]),
     }
 
 
@@ -208,15 +228,37 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
                        group_name=guess_group(r["sender"]), message=r["original"], ai_draft=ai, reply=final)
         log.info("Learned from your edit on approval %s.", r["id"])
 
+    extra: dict = {}  # helpers from extras.register(), filled in below
+
+    def maybe_autosend(aid: int, d, channel: str, sender: str, text: str) -> None:
+        """Auto-send (off unless you switch it on): only the safest replies, within a daily cap.
+        It still goes through the undo window (at least 60 seconds) and shows up in Activity."""
+        a = extra["autosend"]() if extra else {"enabled": False}
+        if not a.get("enabled"):
+            return
+        allow = (db.get_setting("quiet", {}) or {}).get("allow", [])
+        if (d.bucket != "auto" or d.confidence != "high" or is_urgent(sender, text, allow)
+                or not db.has_replied_to(channel, sender)):  # never to someone you haven't replied to yourself
+            return
+        since = iso(datetime.combine(datetime.now().date(), datetime.min.time()).astimezone())
+        if db.auto_sent_since(since) >= a.get("daily_cap", 10):
+            log.info("Auto-send daily cap reached; approval %s waits for you.", aid)
+            return
+        send_at = iso(utcnow() + timedelta(seconds=max(settings.undo_seconds, 60)))
+        if db.update_approval(aid, where_status=("pending",), status="sending", send_at=send_at, auto_sent=1):
+            log.info("Auto-sending approval %s to %s (undo window until %s).", aid, sender, send_at)
+
     def ingest(channel: str, sender: str, text: str) -> int:
         """Store an incoming message, draft a reply and queue it. Returns the approval id."""
         msg_id = db.add_message(channel, sender, text)
         history = db.conversation(channel, sender, before_message_id=msg_id)
-        d = drafter.draft(channel=channel, sender=sender, text=text, history=history)
-        # For now every message lands in the approval queue, whatever its bucket.
+        about = extra["notes_for"](sender) if extra else ""
+        d = drafter.draft(channel=channel, sender=sender, text=text, history=history, about=about)
+        # Every message lands in the approval queue unless auto-send is on and it's one of the safest.
         aid = db.add_approval(message_id=msg_id, channel=channel, sender=sender, original=text, draft=d.draft,
                               tone="default", bucket=d.bucket, reason=d.reason, confidence=d.confidence)
         log.info("New %s message from %s -> approval %s [%s]", channel, sender, aid, d.bucket)
+        maybe_autosend(aid, d, channel, sender, text)
         if d.bucket != "never":  # don't track dates from spam
             for dl in deadlines_mod.extract(text):
                 if db.add_deadline(**dl, source="message", message_id=msg_id, sender=sender, channel=channel):
@@ -341,9 +383,53 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
         return await call_next(request)
 
     def local_only(request: Request) -> None:
-        """The PIN and the device list are shown only on this computer, never to a paired phone."""
-        if not is_local(request):
+        """Things like the PIN, backups and auto-send are only for this computer, never a paired phone.
+        (With phone access off, Aide only listens on this computer anyway.)"""
+        if settings.lan and not is_local(request):
             raise HTTPException(403, "Only available on the computer running Aide")
+
+    extra.update(extras.register(app, db, local_only))
+
+    # ----- "Remind me later" -------------------------------------------------------
+    @app.post("/api/approvals/{approval_id}/snooze")
+    def snooze(approval_id: int, body: SnoozeIn):
+        r = get_or_404(approval_id)
+        until = body.until if body.until.tzinfo else body.until.astimezone()
+        if until <= utcnow():
+            raise HTTPException(422, "Pick a time in the future")
+        if not db.update_approval(approval_id, where_status=("pending",), snooze_until=iso(until)):
+            conflict(r, "snooze")
+        return aj(db.get_approval(approval_id))
+
+    @app.post("/api/approvals/{approval_id}/unsnooze")
+    def unsnooze(approval_id: int):
+        r = get_or_404(approval_id)
+        if not db.update_approval(approval_id, where_status=("pending",), snooze_until=None):
+            conflict(r, "bring back")
+        return aj(db.get_approval(approval_id))
+
+    @app.get("/api/approvals/snoozed")
+    def list_snoozed():
+        return [aj(r) for r in db.snoozed()]
+
+    # ----- quick capture (typed or spoken) -------------------------------------------
+    @app.post("/api/capture")
+    def capture(body: CaptureIn):
+        """Route a quick note: a food order plans a cart, a dated deadline/exam is added to Tasks,
+        anything else is kept as a note for the chat."""
+        text = " ".join(body.text.split())
+        if FOOD_INTENT.search(text):
+            prefs = load_food_profile()
+            plan = food.parse_request(FOOD_INTENT_PREFIX.sub("", text), prefs)
+            if plan["items"]:
+                oid = db.add_food_order(request=text, **plan)
+                return {"kind": "food", "order": food_json(db.get_food_order(oid), prefs)}
+        found = deadlines_mod.extract(text)
+        if found:
+            did = db.add_deadline(**found[0], source="manual")
+            if did:
+                return {"kind": "deadline", "deadline": deadline_json(db.get_deadline(did))}
+        return {"kind": "note"}
 
     @app.get("/api/pair/status")
     def pair_status(request: Request):
@@ -504,6 +590,7 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
             "transport": r["transport"],
             "edited": _norm(r["draft"]) != _norm(r["ai_draft"] or r["draft"]),
             "learned": bool(r["learned"]),
+            "auto": bool(r["auto_sent"]),
         } for r in db.history(limit)]
 
     @app.get("/api/learned")
@@ -668,12 +755,19 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
             parts.append("exam tomorrow")
         elif due_tomorrow:
             parts.append(f"{len(due_tomorrow)} due tomorrow")
+        study = extra["study_today"]() if extra else []
+        study_left = [s for s in study if not s["done"]]
+        if study_left:
+            mins = sum(s["minutes"] for s in study_left)
+            parts.append(f"{fmt_minutes(mins)} of study")
         return {
             "date": today.isoformat(),
             "headline": " · ".join(parts) if parts else "Nothing needs you right now.",
             "pending": len(pending),
+            "snoozed": len(db.snoozed()),
             "urgent": [aj(r) for r in urgent][:3],
             "overdue": overdue, "today": due_today, "tomorrow": due_tomorrow, "thisWeek": this_week,
+            "study": study,
             "foodOpen": food_open,
             "handledYesterday": db.handled_by_day().get((today - timedelta(days=1)).isoformat(), 0),
             "quiet": quiet,
