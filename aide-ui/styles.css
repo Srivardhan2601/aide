@@ -919,6 +919,8 @@ body[data-view="chat"] .toasts { bottom: 130px; } /* clear the composer */
   .greet-title { font-size: 26px; }
 
   .fab { right: 16px; bottom: calc(90px + env(safe-area-inset-bottom)); width: 52px; height: 52px; border-radius: 17px; }
+  /* On a phone the button would sit on top of Approve/Edit; Approvals has its own Paste button. */
+  body[data-view="approvals"] .fab, body[data-view="settings"] .fab { opacity: 0; pointer-events: none; transform: scale(0.8); }
   .toasts { left: 16px; right: 16px; bottom: calc(90px + env(safe-area-inset-bottom)); }
   body[data-view="chat"] .toasts { bottom: calc(196px + env(safe-area-inset-bottom)); } /* clear the composer */
   .toast { max-width: none; min-width: 0; }
@@ -1052,7 +1054,7 @@ body[data-view="chat"] .toasts { bottom: 130px; } /* clear the composer */
 }
 
 /* ---------- Today brief, deadlines, quiet mode, notifications ---------- */
-.brief { display: grid; gap: 10px; }
+.brief { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; } /* long titles shrink instead of widening the card */
 .brief-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .brief-head h3 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 15px; font-weight: 600; }
 .brief-head h3 .ic { width: 17px; height: 17px; color: var(--accent); }
@@ -1062,7 +1064,7 @@ body[data-view="chat"] .toasts { bottom: 130px; } /* clear the composer */
 .brief-urgent { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 9px 12px; border-radius: 12px; background: var(--danger-soft); color: var(--danger); font-weight: 500; font-size: 13px; }
 .brief-urgent span { flex: 1; }
 .brief-urgent .ic { width: 16px; height: 16px; flex: none; }
-.brief-group ul { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 4px; }
+.brief-group ul { list-style: none; margin: 4px 0 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; }
 .brief-label { font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
 .brief-item { display: flex; align-items: center; gap: 10px; font-size: 14px; padding: 4px 0; }
 .brief-item.is-overdue .bi-title, .brief-item.is-overdue .bi-when { color: var(--danger); }
@@ -1105,7 +1107,8 @@ body[data-view="chat"] .toasts { bottom: 130px; } /* clear the composer */
 .brief-time { width: auto; }
 
 @media (max-width: 767px) {
-  .dl-form { grid-template-columns: 1fr 1fr; }
+  .dl-form { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .dl-form > *, .dl-form .input { min-width: 0; width: 100%; }
   .dl-form .dl-title { grid-column: 1 / -1; }
   .dl-form .btn { grid-column: 1 / -1; }
 }
@@ -1150,7 +1153,7 @@ body[data-view="chat"] .toasts { bottom: 130px; } /* clear the composer */
 .composer .mic-inline.listening { background: #ef4444; }
 .dl-title-wrap { min-width: 0; }
 
-.study-page { display: grid; gap: 14px; }
+.study-page { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
 .st-suggest { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--text-2); }
 .st-suggest > .ic { width: 16px; height: 16px; color: var(--accent); }
 .st-form { display: grid; gap: 10px; }
@@ -1160,15 +1163,15 @@ body[data-view="chat"] .toasts { bottom: 130px; } /* clear the composer */
 .st-form textarea { resize: vertical; min-height: 64px; }
 .st-daily { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; color: var(--text-2); }
 .st-daily .select { width: auto; }
-.st-today { display: grid; gap: 8px; }
-.st-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.st-today { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.st-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
 .st-session { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 10px; background: var(--surface-2); font-size: 14px; }
 .st-session.is-revision { background: var(--accent-soft); }
 .st-session.is-done .st-topic, .st-session.is-done .st-subject { text-decoration: line-through; color: var(--muted); }
-.st-subject { font-weight: 600; white-space: nowrap; }
+.st-subject { font-weight: 600; white-space: nowrap; max-width: 55%; overflow: hidden; text-overflow: ellipsis; }
 .st-topic { flex: 1; min-width: 0; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .st-mins { font-size: 12px; color: var(--muted); white-space: nowrap; }
-.st-day { display: grid; gap: 6px; margin-bottom: 12px; }
+.st-day { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; margin-bottom: 12px; }
 .st-day-label { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 .st-progress { height: 5px; border-radius: 5px; background: var(--surface-3); margin-top: 6px; overflow: hidden; }
 .st-progress i { display: block; height: 100%; background: var(--grad); border-radius: inherit; }
@@ -1249,4 +1252,24 @@ body[data-view="chat"] .toasts { bottom: 130px; } /* clear the composer */
 @media (max-width: 480px) {
   .talk-log { max-height: 28vh; }
   .talk-actions .btn { flex: 1 1 auto; }
+}
+
+/* Phones: small controls keep their look but get a finger-sized tap area (about 40px). */
+@media (pointer: coarse) {
+  .dl-check, .icon-btn.sm { position: relative; }
+  .dl-check::before, .icon-btn.sm::before { content: ''; position: absolute; inset: -9px; }
+  .switch::before { content: ''; position: absolute; inset: -11px -5px; }
+  .brief-link { min-height: 36px; }
+  .app-tag { min-height: 32px; }
+}
+
+/* Small phones (320-380px): the title gives way instead of sliding under the buttons,
+   and the Active pill hides (the Pause/Resume button already shows the state). */
+@media (max-width: 767px) {
+  .page-title { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .page-title .logo { flex: none; }
+  .topbar-right { flex: none; gap: 6px; }
+}
+@media (max-width: 380px) {
+  .topbar .status:not(.quiet) { display: none; }
 }

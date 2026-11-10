@@ -294,6 +294,8 @@ def register(app: FastAPI, db: DB, local_only) -> dict:
     async def restore(request: Request):
         """Replace everything with a backup. Saves a safety copy of the current data first."""
         local_only(request)
+        if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/json":
+            raise HTTPException(415, "Send the backup as JSON")  # a plain web form can't send JSON
         try:
             data = json.loads(await request.body())
         except ValueError:

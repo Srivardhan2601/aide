@@ -11,6 +11,8 @@ from app.config import CONFIG_DIR
 from app.db import iso, utcnow
 from app.drafter import build_user_prompt
 
+JSON_HDR = {"Content-Type": "application/json"}
+
 TODAY = date(2026, 11, 9)
 
 
@@ -209,7 +211,7 @@ def test_backup_and_restore_roundtrip(client, tmp_path, monkeypatch):
     assert "style_profile.json" in data["config"]
 
     post(client, "Priya", "something new after the backup")
-    out = client.post("/api/backup/restore", content=json.dumps(data)).json()
+    out = client.post("/api/backup/restore", content=json.dumps(data), headers=JSON_HDR).json()
     assert out["restored"]["messages"] == 1 and out["safetyCopy"].startswith("before-restore-")
     assert (tmp_path / "backups" / out["safetyCopy"]).exists()
     senders = [m["from"] for m in client.get("/api/approvals").json()]
@@ -221,10 +223,10 @@ def test_bad_backup_changes_nothing(client, tmp_path, monkeypatch):
     from app import extras
     monkeypatch.setattr(extras, "BACKUP_DIR", tmp_path / "backups")
     post(client, "Sam", "lunch today?")
-    assert client.post("/api/backup/restore", content=b"not json").status_code == 422
-    assert client.post("/api/backup/restore", content=json.dumps({"app": "other"})).status_code == 422
+    assert client.post("/api/backup/restore", content=b"not json", headers=JSON_HDR).status_code == 422
+    assert client.post("/api/backup/restore", content=json.dumps({"app": "other"}), headers=JSON_HDR).status_code == 422
     bad = {"app": "aide", "version": 1, "tables": {"messages": [{"id": 1, "nonsense": 1}]}}
-    assert client.post("/api/backup/restore", content=json.dumps(bad)).status_code == 422
+    assert client.post("/api/backup/restore", content=json.dumps(bad), headers=JSON_HDR).status_code == 422
     assert [m["from"] for m in client.get("/api/approvals").json()] == ["Sam"]
 
 

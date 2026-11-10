@@ -152,6 +152,13 @@ How it's protected (`app/phone.py`):
     start over (then reinstall the new one on the phone).
 - Use trusted home Wi-Fi only, never public Wi-Fi.
 
+Other websites can't use Aide either (always on, phone access or not):
+- Any request that changes something (approve, send, restore a backup…) coming from another
+  website open in your browser is refused (`Origin` / `Sec-Fetch-Site` check in `app/main.py`).
+- Aide only answers to `localhost` and private network addresses, so a website can't point its
+  own name at your computer to read Aide's data (DNS rebinding).
+- Restoring a backup only accepts JSON, which a plain web form can't send.
+
 ## Talk to Aide (voice)
 
 The mic button at the top opens **Talk to Aide**. Speak (or type) and it answers out loud from
@@ -225,6 +232,7 @@ Through these connectors, Swiggy is cash on delivery and orders can't be cancell
    This matters most for drafts that sound like you.
 2. Confirm how Aide should address you (`form_of_address`, currently "Sri Vardhan").
 3. Confirm your usual availability (`availability`, currently "evenings").
-4. `ANTHROPIC_API_KEY` as an environment variable (never pasted into code). To keep it set for
-   every new terminal, run this once: `setx ANTHROPIC_API_KEY "<your key>"`, then open a new terminal.
+4. `ANTHROPIC_API_KEY` as an environment variable (never pasted into code). The step-by-step is in
+   [SETUP_AFTER_EXAMS.md](../SETUP_AFTER_EXAMS.md) (set it in Windows' environment variables, so the
+   key doesn't end up in your terminal history).
 5. Optional: connect Gmail by following [GMAIL_SETUP.md](GMAIL_SETUP.md) (about 10 minutes).

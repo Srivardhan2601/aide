@@ -111,6 +111,8 @@ def parse_message(msg: dict) -> IncomingEmail:
 
 def build_reply(*, to: str, subject: str, body: str, in_reply_to: str, references: str) -> str:
     """A plain-text reply as a base64url 'raw' string for users.messages.send."""
+    # Header values must be one line, or the send fails: fold any line breaks from the original email.
+    to, subject, in_reply_to, references = (" ".join((v or "").split()) for v in (to, subject, in_reply_to, references))
     m = EmailMessage()
     m["To"] = to
     m["Subject"] = subject if re.match(r"(?i)^re:", subject) else f"Re: {subject}".strip()

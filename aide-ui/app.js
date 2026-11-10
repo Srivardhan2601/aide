@@ -700,8 +700,11 @@
     } catch (e) {
       delete state.sending[id];
       refreshCard(id);
-      toast(e.status === 409 ? 'That reply was already handled' : "Couldn't reach the server. Nothing was sent.");
-      if (e.status === 409) loadLive();
+      // No answer doesn't mean nothing happened: the server may have approved it before the connection dropped.
+      toast(e.status === 409 ? 'That reply was already handled'
+        : e.status ? (e.message || "Couldn't send that reply.")
+        : "Couldn't confirm with the server. Check your queue before trying again.");
+      if (e.status === 409 || !e.status) loadLive();
       return;
     }
     if (navigator.vibrate && (!navigator.userActivation || navigator.userActivation.hasBeenActive)) navigator.vibrate(12);
@@ -739,8 +742,15 @@
       setTimeout(() => removeApproval(id), 1300);
       return;
     }
-    if (a && a.status === 'pending') { delete state.sending[id]; renderAll(); return; } // undone elsewhere
+    if (a && a.status === 'pending') { // the send failed, or it was undone on another device
+      delete state.sending[id];
+      const item = state.approvals.find((x) => x.id === id);
+      toast(`Not sent${item ? ` to ${item.from}` : ''}. It's back in your queue.`);
+      renderAll();
+      return;
+    }
     if (tries < 30) setTimeout(() => confirmSent(id, isUndone, tries + 1), 400);
+    else loadLive(); // still unsure after ~12s: show what the server has
   }
 
   function removeApproval(id) {

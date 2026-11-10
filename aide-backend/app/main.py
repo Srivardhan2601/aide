@@ -368,7 +368,7 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
-        allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
+        allow_origin_regex=phone.LOCAL_ORIGIN.pattern,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -388,6 +388,24 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
         if (settings.lan and path.startswith("/api/") and path not in PUBLIC_API
                 and not is_local(request) and not pairing.is_paired(request.cookies.get(phone.COOKIE))):
             return JSONResponse({"detail": "pair"}, status_code=401)
+        return await call_next(request)
+
+    @app.middleware("http")
+    async def same_site_guard(request: Request, call_next):
+        """Only Aide's own pages can use Aide.
+        - Host check: blocks DNS rebinding (a website pointing its own name at this computer).
+        - Origin check: another website open in your browser can't make Aide approve, send,
+          restore a backup or change anything. Browsers always send Origin on those requests."""
+        if not phone.allowed_host(request.headers.get("host", "")):
+            return JSONResponse({"detail": "Unknown host"}, status_code=403)
+        if request.method not in ("GET", "HEAD", "OPTIONS"):
+            origin = request.headers.get("origin")
+            if origin is not None:
+                same = origin.split("://", 1)[-1].lower() == request.headers.get("host", "").lower()
+                if not (same or origin in settings.cors_origins or phone.LOCAL_ORIGIN.fullmatch(origin)):
+                    return JSONResponse({"detail": "Blocked: request from another website"}, status_code=403)
+            elif request.headers.get("sec-fetch-site") == "cross-site":
+                return JSONResponse({"detail": "Blocked: request from another website"}, status_code=403)
         return await call_next(request)
 
     def local_only(request: Request) -> None:
@@ -535,7 +553,8 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
             conflict(r, "regenerate")
         d = drafter.draft(channel=r["channel"], sender=r["sender"], text=r["original"], tone=body.tone,
                           previous_draft=r["draft"],
-                          history=db.conversation(r["channel"], r["sender"], before_message_id=r["message_id"]))
+                          history=db.conversation(r["channel"], r["sender"], before_message_id=r["message_id"]),
+                          about=extra["notes_for"](r["sender"]) if extra else "")
         if not db.update_approval(approval_id, where_status=("pending",), draft=d.draft, ai_draft=d.draft,
                                   tone=body.tone, confidence=d.confidence, bucket=d.bucket, reason=d.reason):
             conflict(db.get_approval(approval_id), "regenerate")
@@ -575,7 +594,7 @@ def create_app(settings: Settings | None = None, drafter=None, gmail=None) -> Fa
         # Conditional on the same send_at, so we can't undo something the sender already claimed.
         with db.lock:
             cur = db.conn.execute(
-                "UPDATE approvals SET status = 'pending', send_at = NULL, updated_at = ? WHERE id = ? AND status = 'sending' AND send_at = ?",
+                "UPDATE approvals SET status = 'pending', send_at = NULL, auto_sent = 0, updated_at = ? WHERE id = ? AND status = 'sending' AND send_at = ?",
                 (iso(utcnow()), approval_id, r["send_at"]),
             )
             db.conn.commit()

@@ -1,6 +1,6 @@
 // Aide service worker: network first, cache as offline fallback.
 // Network-first means you always get the latest files while online.
-const CACHE = 'aide-v11';
+const CACHE = 'aide-v12';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'mock-data.js', 'manifest.webmanifest', 'icons/icon-192.png'];
 
 self.addEventListener('install', (e) => {

@@ -9,12 +9,15 @@ Off unless Aide starts with AIDE_LAN=on (start-phone.cmd). Then:
 - Each paired phone can be removed from this computer at any time.
 - Only a hash of each pass is stored.
 
-It's plain HTTP on your own network: use it on trusted home Wi-Fi, not public Wi-Fi.
+Phones connect over HTTPS with Aide's home certificate (app/certs.py). Use it on trusted
+home Wi-Fi, not public Wi-Fi.
 """
 from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
+import re
 import secrets
 import socket
 import threading
@@ -26,6 +29,25 @@ COOKIE = "aide_device"
 COOKIE_DAYS = 90
 LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
 MAX_FAILURES, LOCKOUT_SECONDS = 5, 600
+LOCAL_ORIGIN = re.compile(r"https?://(localhost|127\.0\.0\.1)(:\d+)?")
+NAMED_HOSTS = {"localhost", "testserver"}  # testserver = the test client
+
+
+def allowed_host(host_header: str) -> bool:
+    """Aide answers only to this computer's names and private network addresses (192.168.x.x etc.),
+    never to a website's domain name, so a site can't point its name at Aide (DNS rebinding)."""
+    host = host_header.strip().lower()
+    if host.startswith("["):  # [::1]:8000
+        host = host[1:].split("]", 1)[0]
+    elif host.count(":") == 1:
+        host = host.split(":", 1)[0]
+    if host in NAMED_HOSTS:
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_loopback or (ip.is_private and not ip.is_link_local)
 
 
 def _hash(token: str) -> str:
